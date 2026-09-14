@@ -1,0 +1,126 @@
+# mask-decryption — Spec v0.1
+
+## Purpose
+CLI tool (GUI fast-follow) to encrypt/decrypt local files with modern authenticated encryption.
+Encrypt: `file.txt` → `file.txt.mlp`
+Decrypt: `file.txt.mlp` → `file.txt`
+
+## Language / Stack
+- Go (single static binary, cross-platform), min version: latest stable (1.23+)
+- Module: `github.com/EldinBegano/mask-decryption`
+- Binary/command name: `mlp`
+- CLI framework: cobra
+- GUI (v0.2): Fyne (pure Go, bundles with CLI)
+- License: none (private/unpublished for now, all rights reserved by default)
+- Output: plain text, no color, respects `NO_COLOR`; zero telemetry/analytics, ever.
+
+## Crypto
+- Algorithm: AES-256-GCM (AEAD — confidentiality + integrity in one)
+- Key: 256-bit, generated via `crypto/rand`
+- Nonce: 96-bit, **counter-based** (not random) — guarantees no reuse under a given key.
+  - Counter stored in a separate state file next to the keyfile: `<config>/mask-decryption/counter`.
+  - Incremented and fsynced *before* each encrypt uses the value (crash-safe: never reuse on interrupted write).
+  - Nonce actually used = counter value, stored in file header alongside ciphertext.
+  - If counter state file is missing/corrupted but keyfile is present: fall back to a random nonce for that operation and print a loud warning (does not block the operation).
+- Tampered/corrupted `.mlp` file → GCM auth tag check fails → decrypt aborts with clear error, no partial output
+
+## Key management
+- Single symmetric keyfile, no passphrase.
+- Location: OS config dir via `os.UserConfigDir()` → `<config>/mask-decryption/keyfile`
+  (Linux: `~/.config/mask-decryption/keyfile`)
+- Permissions: `0600` on creation.
+- Auto-created on first `encrypt` if missing (no explicit `keygen` step required, but `mlp keygen` also exposed for manual regen — regen resets counter too).
+- Program locates keyfile automatically — no path input from user in normal operation.
+- **No recovery mechanism.** Lost/deleted keyfile = permanently unrecoverable data. On first key creation, CLI prints a one-time loud warning telling user to back up the keyfile.
+- `mlp keyfile export <path>` — copies keyfile **and counter state** out (e.g. to USB) for backup, bundled together so a restore continues the counter correctly (avoids nonce reuse). Prints SHA-256 of the exported keyfile to terminal for manual verification.
+- `mlp keyfile import <path>` — installs keyfile + counter from backup into the config dir (confirms before overwriting an existing one).
+- Config dir override: `MLP_CONFIG_DIR` env var, if set, overrides `os.UserConfigDir()` default (portable/USB use, testing).
+
+## File format (`.mlp`)
+Binary header + ciphertext:
+
+| Field | Size | Notes |
+|---|---|---|
+| Magic | 4 bytes | `"MLP1"` |
+| Version | 1 byte | format version, `0x01` |
+| Original extension | length-prefixed (1 byte len + UTF-8 bytes) | e.g. `"txt"`, restores extension on decrypt |
+| Nonce | 12 bytes | GCM nonce, counter-derived (or random fallback if counter state was lost) |
+| Ciphertext+Tag | remainder | AES-256-GCM output (tag appended) |
+
+- Decrypt reads header, restores original extension automatically — user doesn't retype it.
+
+## CLI
+```
+mlp encrypt <file> [-o output]     # file.txt -> file.mlp (extension replaced, or custom path via -o/--output)
+mlp decrypt <file.mlp> [-o output] # file.mlp -> file.txt (original extension restored from header, or custom path via -o/--output)
+mlp verify <file.mlp>              # checks auth tag/integrity, no plaintext written to disk
+mlp keygen                         # force-regenerate keyfile (with confirmation, old keyfile = old data unreadable)
+mlp keyfile export <path>          # back up keyfile to given path
+mlp keyfile import <path>          # restore keyfile from given path
+```
+- Built with cobra.
+- `-o/--output` lets user redirect output location/filename; default is fixed naming next to input.
+- Both original and output file are kept (no auto-delete).
+- If output filename already exists: abort, don't overwrite, print error (no silent clobber).
+  `--force` overwrite flag deferred to post-v0.1 (backlog).
+- Default output: one-line confirmation printed on success (e.g. `encrypted -> file.txt.mlp`). `-v/--verbose` adds step/timing detail. No progress bar (whole-file crypto is fast enough not to need one).
+- Output file preserves original file's permission mode bits.
+- Symlink input: followed (operates on link target), standard CLI behavior.
+
+## GUI (v0.2, fast-follow after CLI)
+- Thin wrapper over same core library used by CLI (no duplicated crypto logic).
+- File picker to choose input file.
+- Buttons: Encrypt / Decrypt, calling same code path as CLI.
+- Same "keep both files" and "no overwrite" behavior.
+- Not part of v0.1 — CLI ships and stabilizes first.
+
+## Scope (v0.1)
+- CLI only. Single file only. No directories/recursive/batch (future consideration, not now).
+- No password-based mode, no multi-key/multi-user support.
+
+## Large files
+- Whole-file AES-256-GCM: entire file loaded into memory, single seal/open call. Fine for typical personal files. No streaming/chunked AEAD in v0.1 (revisit if very-large-file use case shows up).
+
+## Edge cases
+- Encrypting a file already ending in `.mlp` → refused with error (no double-wrap).
+- File with no extension → original-extension field in header stored as empty string; decrypt restores filename with no extension.
+
+## Exit codes
+Distinct codes per failure type, for scripting:
+| Code | Meaning |
+|---|---|
+| 0 | success |
+| 1 | generic error |
+| 2 | keyfile missing/not found |
+| 3 | auth/tamper failure (GCM tag mismatch on decrypt) |
+| 4 | output file already exists |
+| 5 | input already `.mlp` (encrypt) or not `.mlp` (decrypt) |
+| 6 | `verify` failed (tamper/corruption detected) |
+
+## CI
+- GitHub Actions: `go build` + `go vet` on every push/PR.
+- goreleaser: cross-compiled binaries on tag push (separate workflow).
+
+## Testing (v0.1)
+- Minimal/none formally required for v0.1 — manual verification of encrypt/decrypt roundtrip, tamper detection, wrong/missing-keyfile behavior. Revisit adding unit + fuzz tests post-v0.1.
+
+## Distribution
+- goreleaser, cross-compiled binaries attached to GitHub releases on tag push.
+
+## Architecture
+```
+/cmd/mlp             - CLI entrypoint (cobra), builds the `mlp` binary
+/cmd/gui             - Fyne entrypoint (v0.2, not yet scaffolded)
+/internal/crypto     - AES-256-GCM encrypt/decrypt core
+/internal/keystore   - keyfile + counter create/load/locate/export/import
+/internal/fileformat - .mlp header read/write
+```
+
+## Backlog (post-v0.1, not open questions — deliberately deferred)
+- `--force` overwrite flag
+- `mlp info <file.mlp>` — inspect header without decrypting
+- Streaming/chunked AEAD for very large files
+- GUI (v0.2, Fyne)
+
+## Open questions
+None — all resolved for v0.1.
