@@ -10,6 +10,7 @@ import (
 const (
 	KeySize   = 32 // AES-256
 	NonceSize = 12 // standard GCM nonce size
+	TagSize   = 16 // GCM authentication tag appended to the ciphertext
 )
 
 // ErrAuthFailed means the ciphertext failed authentication: wrong key,

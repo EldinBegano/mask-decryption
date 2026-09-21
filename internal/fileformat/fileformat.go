@@ -28,6 +28,11 @@ type Header struct {
 	Nonce [NonceSize]byte
 }
 
+// Size is the number of bytes h occupies at the start of a .mlp file.
+func (h Header) Size() int {
+	return len(magic) + 1 + 1 + len(h.Ext) + NonceSize
+}
+
 // WriteHeader writes h to w.
 func WriteHeader(w io.Writer, h Header) error {
 	if len(h.Ext) > MaxExtLen {

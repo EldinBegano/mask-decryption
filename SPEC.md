@@ -10,8 +10,8 @@ Decrypt: `file.mlp` → `file.txt`
 - Module: `github.com/EldinBegano/mask-decryption`
 - Binary/command name: `mlp`
 - CLI framework: cobra
-- GUI (v0.4, see ROADMAP.md): Fyne (pure Go, bundles with CLI)
-- License: none (private/unpublished for now, all rights reserved by default)
+- GUI (v0.5, see ROADMAP.md): Fyne, as a separate binary from the CLI (needs CGO)
+- License: GPL-3.0-or-later from v0.4 (repo goes public for the AUR release). Until then: none, all rights reserved.
 - Output: plain text, no color, respects `NO_COLOR`; zero telemetry/analytics, ever.
 
 ## Crypto
@@ -56,6 +56,7 @@ mlp encrypt <file|dir> [-o output]     # file.txt -> file.mlp (extension replace
 mlp decrypt <file.mlp|dir> [-o output] # file.mlp -> file.txt (original extension restored from header, or custom path via -o/--output); dir = batch
 mlp rotate <file.mlp|dir>... [-y]      # re-encrypt files under a new key, all-or-nothing (v0.2)
 mlp verify <file.mlp>              # checks auth tag/integrity, no plaintext written to disk
+mlp info <file.mlp>                # show header (format version, original extension, decrypts-to name, plaintext size); no key needed (v0.3)
 mlp keygen                         # force-regenerate keyfile (with confirmation, old keyfile = old data unreadable)
 mlp keyfile export <path>          # back up keyfile to given path
 mlp keyfile import <path>          # restore keyfile from given path
@@ -83,7 +84,12 @@ mlp keyfile import <path>          # restore keyfile from given path
 - `.mlp` files not included stay on the old key and no longer decrypt with the active one; `keyfile.old` keeps them recoverable. User deletes `keyfile.old` when done.
 - A crash between key activation and the file renames is the one non-atomic window; recovery is via `keyfile.old` and any leftover `.rotate-tmp` files (a leftover blocks the next rotate until inspected).
 
-## GUI (v0.4, see ROADMAP.md)
+### `mlp info <file.mlp>` (v0.3)
+- Reads only the header: format version, original extension (`(none)` if empty), the filename `decrypt` would produce, and plaintext size (file size minus header minus the 16-byte GCM tag).
+- Never touches the keystore, so it works with no keyfile, and creates nothing. It cannot detect tampering (ciphertext isn't authenticated without the key) — `mlp verify` does that.
+- Exit 5 if the name doesn't end in `.mlp`; exit 1 for bad magic, unsupported version, truncated header, or a file too short to hold the auth tag.
+
+## GUI (v0.5, see ROADMAP.md)
 - Thin wrapper over same core library used by CLI (no duplicated crypto logic).
 - File picker to choose input file.
 - Buttons: Encrypt / Decrypt, calling same code path as CLI.
@@ -125,6 +131,7 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 
 ## Distribution
 - goreleaser, cross-compiled binaries attached to GitHub releases on tag push.
+- AUR (v0.4): `mlp` (source build) and `mlp-bin` (prebuilt release binary). See ROADMAP.md.
 
 ## Architecture
 ```
@@ -136,12 +143,12 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 ```
 
 ## Backlog (post-v0.1, not open questions — deliberately deferred)
-Scheduled into versions — see [ROADMAP.md](ROADMAP.md) for v0.2–v0.5 (batch
-mode, key rotation, `mlp info`, `--force`, GUI, docs).
+Scheduled into versions — see [ROADMAP.md](ROADMAP.md) for v0.2–v0.6 (batch
+mode, key rotation, `mlp info`, AUR release, `--force`, GUI, docs).
 
 Unscheduled:
 - Streaming/chunked AEAD for very large files
-- Automated test suite (unit + fuzz) — v0.6+
+- Automated test suite (unit + fuzz) — v0.7+
 - Password-based mode — rejected permanently, not revisited
 
 ## Open questions
