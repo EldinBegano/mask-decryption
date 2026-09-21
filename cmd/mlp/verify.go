@@ -4,15 +4,13 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/EldinBegano/mask-decryption/internal/crypto"
-	"github.com/EldinBegano/mask-decryption/internal/fileformat"
 	"github.com/EldinBegano/mask-decryption/internal/keystore"
+	"github.com/EldinBegano/mask-decryption/internal/ops"
 )
 
 func newVerifyCmd() *cobra.Command {
@@ -33,17 +31,7 @@ func runVerify(inputPath string) error {
 		return withCode(5, fmt.Errorf("%s is not a .mlp file", inputPath))
 	}
 
-	f, err := os.Open(inputPath)
-	if err != nil {
-		return withCode(1, err)
-	}
-	defer f.Close()
-
-	hdr, err := fileformat.ReadHeader(f)
-	if err != nil {
-		return withCode(1, fmt.Errorf("%s: %w", inputPath, err))
-	}
-	ciphertext, err := io.ReadAll(f)
+	hdr, ciphertext, err := ops.ReadMLP(inputPath)
 	if err != nil {
 		return withCode(1, err)
 	}

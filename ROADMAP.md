@@ -107,16 +107,52 @@ Known limits:
 - `mlp` `.SRCINFO` checksums come from GitHub's tag tarball; GitHub has
   changed archive bytes before, which would need a `pkgrel` bump.
 
-## v0.5 — `--force` flag + GUI  (was v0.4)
-- `--force` on `encrypt`/`decrypt`: overwrite an existing output file
-  instead of aborting; still prints what it did.
-- GUI (Fyne): thin wrapper over the same core library — encrypt / decrypt
-  / batch through a file picker. Mirrors CLI behavior (keep both, no
-  overwrite unless forced).
-- Note: a Fyne GUI needs CGO and system GL/X11 libs, so it must be a
-  **separate binary/package** (e.g. `mlp-gui`), not part of the CLI build.
-  The CLI stays CGO-free and dependency-light, which keeps the AUR `mlp`
-  package simple.
+## v0.5 — `--force` flag + GUI  (built; behavior specified in SPEC.md)
+
+Decided:
+- GUI scope: encrypt/decrypt of a file or folder, results list, overwrite
+  prompt, first-run backup notice, keyfile export/import. `rotate`, `keygen`,
+  `verify`, `info` stay CLI-only.
+- Distribution: Linux-first. New AUR package `mlp-gui` (source build,
+  installs a `.desktop` launcher and icon), published by the same release
+  job. No macOS/Windows builds, no GUI asset on the GitHub release.
+
+Built:
+- `internal/ops`: file-level encrypt/decrypt, batch walk and atomic writes
+  extracted out of `cmd/mlp`, so the CLI and GUI share one implementation.
+  It never prints or exits; errors carry a `Kind` that the CLI maps to exit
+  codes and the GUI maps to dialogs. The CLI's behavior is unchanged.
+- `--force` / `-f` on `encrypt` and `decrypt` (single and batch): atomic
+  replace via temp file + rename; refuses same-file and directory outputs.
+- `cmd/mlp-gui` (Fyne 2.8, still `go 1.23`): pick or drop, live results,
+  overwrite prompt, key notices, key export/import, `--version`.
+- `packaging/aur/mlp-gui/PKGBUILD`; `release.yml` publishes it alongside
+  `mlp-bin` and `mlp`; CI installs the GL/X11 dev libraries.
+- `mlp`'s PKGBUILD now fetches only the CLI's dependencies
+  (`go list -deps ./cmd/mlp`) instead of all of Fyne.
+
+Verified: the 44-check v0.2/v0.3 regression script still passes after the
+refactor; a new 31-check `--force` script passes; the GUI was driven
+headless through Fyne's test driver against real files (encrypt, forced
+retry, folder batch both ways, no-keyfile) and its screenshots reviewed;
+the binary was started on a real Wayland desktop; `mlp` and `mlp-gui`
+PKGBUILDs build, pass `check()` and `namcap` (no errors) in the CI Arch
+image; the CI apt package list builds and vets in a Go 1.23 container.
+
+**Not verified:** clicking through the GUI by hand (native file pickers,
+drag-and-drop, the confirm dialogs), and the real AUR push of `mlp-gui`.
+
+Release steps: commit and push; tag `v0.5.0`. The first `mlp-gui` push
+creates the AUR package. If only the AUR step fails, re-run it with
+Actions > Release > Run workflow, `tag=v0.5.0`.
+
+Known limits:
+- Dropping several items uses only the first.
+- The GUI needs a display and GL; it can't be checked in a headless build,
+  so the AUR `check()` only runs `--version` and validates the `.desktop`
+  file.
+- Wayland drag-and-drop support depends on the GLFW backend; the pickers
+  always work.
 
 ## v0.6 — Docs  (was v0.5)
 - `README.md`: install (including `yay -S mlp`), quick start, full command
@@ -128,3 +164,4 @@ Known limits:
 - v0.7: automated test suite (unit + fuzz on `.mlp` header parsing).
 - Streaming/chunked AEAD for very large files — unscheduled.
 - Password-based mode — rejected permanently, not revisited.
+- no Homebrew

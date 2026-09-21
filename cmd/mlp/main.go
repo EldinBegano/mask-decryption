@@ -11,6 +11,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/EldinBegano/mask-decryption/internal/ops"
 )
 
 // exitCodeErr carries a specific process exit code alongside the error,
@@ -30,6 +32,33 @@ func withCode(code int, err error) error {
 	return &exitCodeErr{code: code, err: err}
 }
 
+// exitCode maps an error to the process exit code from SPEC.md.
+func exitCode(err error) int {
+	var ec *exitCodeErr
+	if errors.As(err, &ec) {
+		return ec.code
+	}
+	switch ops.KindOf(err) {
+	case ops.KindNoKey:
+		return 2
+	case ops.KindAuth:
+		return 3
+	case ops.KindExists:
+		return 4
+	case ops.KindWrongType:
+		return 5
+	}
+	return 1
+}
+
+// opsErr wraps an ops error with its exit code.
+func opsErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return withCode(exitCode(err), err)
+}
+
 var verbose bool
 
 // version is set at release time via -ldflags "-X main.version=...".
@@ -38,13 +67,8 @@ var version = "dev"
 func main() {
 	root := newRootCmd()
 	if err := root.Execute(); err != nil {
-		code := 1
-		var ec *exitCodeErr
-		if errors.As(err, &ec) {
-			code = ec.code
-		}
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(code)
+		os.Exit(exitCode(err))
 	}
 }
 

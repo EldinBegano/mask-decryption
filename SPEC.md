@@ -52,8 +52,8 @@ Binary header + ciphertext:
 
 ## CLI
 ```
-mlp encrypt <file|dir> [-o output]     # file.txt -> file.mlp (extension replaced, or custom path via -o/--output); dir = batch
-mlp decrypt <file.mlp|dir> [-o output] # file.mlp -> file.txt (original extension restored from header, or custom path via -o/--output); dir = batch
+mlp encrypt <file|dir> [-o output] [-f]     # file.txt -> file.mlp (extension replaced, or custom path via -o/--output); dir = batch
+mlp decrypt <file.mlp|dir> [-o output] [-f] # file.mlp -> file.txt (original extension restored from header, or custom path via -o/--output); dir = batch
 mlp rotate <file.mlp|dir>... [-y]      # re-encrypt files under a new key, all-or-nothing (v0.2)
 mlp verify <file.mlp>              # checks auth tag/integrity, no plaintext written to disk
 mlp info <file.mlp>                # show header (format version, original extension, decrypts-to name, plaintext size); no key needed (v0.3)
@@ -64,11 +64,17 @@ mlp keyfile import <path>          # restore keyfile from given path
 - Built with cobra.
 - `-o/--output` lets user redirect output location/filename; default is fixed naming next to input.
 - Both original and output file are kept (no auto-delete).
-- If output filename already exists: abort, don't overwrite, print error (no silent clobber).
-  `--force` overwrite flag deferred to post-v0.1 (backlog).
+- If output filename already exists: abort, don't overwrite, print error (no silent clobber). `-f/--force` replaces it instead (v0.5, below).
 - Default output: one-line confirmation printed on success (e.g. `encrypted -> file.mlp`). `-v/--verbose` adds step/timing detail. No progress bar (whole-file crypto is fast enough not to need one).
 - Output file preserves original file's permission mode bits.
 - Symlink input: followed (operates on link target), standard CLI behavior.
+
+### `--force` / `-f` (v0.5)
+- On `encrypt` and `decrypt`, single file or directory: replace an existing output file instead of failing with exit 4. The result line says `(overwrote existing)`.
+- Atomic: the new file is fully written to a temp file beside the target (`.<name>.*.tmp`), fsynced, and renamed over it. Any failure leaves the existing file untouched and no temp file behind. The replaced file takes the source file's permission bits.
+- Guards that `--force` does **not** override: output being the same file as the input (including via a hard link) and output being a directory both exit 1.
+- In batch mode it applies per file. The same-run collision fallback still applies (`notes.txt` still becomes `notes.txt.mlp`, never clobbering `notes.mlp` from the same run).
+- Not offered on `rotate` (which replaces files by design, all-or-nothing) or `keygen`/`keyfile import` (which prompt or take `-y`).
 
 ### Batch mode (v0.2): `mlp encrypt <dir>` / `mlp decrypt <dir>`
 - Recursive, in place, one `.mlp` per file next to its source (mirrored tree, no bundled archive). Each file follows the single-file rules (keep both, never overwrite, mode bits preserved). `-o` with a directory is an error.
@@ -89,12 +95,18 @@ mlp keyfile import <path>          # restore keyfile from given path
 - Never touches the keystore, so it works with no keyfile, and creates nothing. It cannot detect tampering (ciphertext isn't authenticated without the key) — `mlp verify` does that.
 - Exit 5 if the name doesn't end in `.mlp`; exit 1 for bad magic, unsupported version, truncated header, or a file too short to hold the auth tag.
 
-## GUI (v0.5, see ROADMAP.md)
-- Thin wrapper over same core library used by CLI (no duplicated crypto logic).
-- File picker to choose input file.
-- Buttons: Encrypt / Decrypt, calling same code path as CLI.
-- Same "keep both files" and "no overwrite" behavior.
-- Not part of v0.1 — CLI ships and stabilizes first.
+## GUI: `mlp-gui` (v0.5)
+A separate desktop binary, built from `cmd/mlp-gui` with Fyne. It is a thin front end over the same `internal/ops` and `internal/keystore` packages the CLI uses, so it shares the CLI's keyfile, `.mlp` format, and behavior (keep both files, never overwrite silently, permission bits preserved, batch rules unchanged).
+
+- **Pick or drop:** one file or one folder, via "Choose file…", "Choose folder…", or drag and drop (first item if several are dropped). Buttons enable by what's selected: a plain file allows Encrypt only, a `.mlp` file Decrypt only, a folder both.
+- **Run:** works on a background goroutine with a busy indicator; per-file results appear live in a list, then a summary (`N encrypted, M skipped, K failed`).
+- **Overwrite prompt (the GUI's `--force`):** if outputs already exist, a dialog lists them and asks to replace. Yes redoes exactly those files with `Force`; No leaves them.
+- **First-run notice:** when encrypting creates the keyfile, a dialog says where it is and to back it up.
+- **Keyfile dialog:** shows the keyfile path; "Export backup…" (writes keyfile + counter to a chosen folder, shows the SHA-256) and "Import backup…" (confirms before replacing an existing key).
+- **Decrypt with no keyfile:** explains and points to Import backup.
+- Deliberately CLI-only: `rotate`, `keygen`, `verify`, `info`.
+- `mlp-gui --version` prints `mlp-gui <version>` without opening a window.
+- Needs CGO and system GL/X11/Wayland libraries, so it is not part of the CLI build, the goreleaser archives, or `mlp`/`mlp-bin`. Linux only for now (AUR `mlp-gui`); no macOS/Windows builds.
 
 ## Scope (v0.1)
 - CLI only. Single file only (directories/batch arrived in v0.2, see above).
@@ -131,12 +143,13 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 
 ## Distribution
 - goreleaser, cross-compiled binaries attached to GitHub releases on tag push.
-- AUR (v0.4): `mlp` (source build) and `mlp-bin` (prebuilt release binary), pushed automatically on each stable tag by `.github/workflows/release.yml` using `packaging/aur/`. See ROADMAP.md.
+- AUR: `mlp` (source build), `mlp-bin` (prebuilt release binary) and `mlp-gui` (source build of the GUI, v0.5), pushed automatically on each stable tag by `.github/workflows/release.yml` using `packaging/aur/`. See ROADMAP.md.
 
 ## Architecture
 ```
-/cmd/mlp             - CLI entrypoint (cobra), builds the `mlp` binary
-/cmd/gui             - Fyne entrypoint (v0.2, not yet scaffolded)
+/cmd/mlp             - CLI entrypoint (cobra), builds the `mlp` binary; thin wrapper over internal/ops
+/cmd/mlp-gui         - Fyne desktop app, builds the `mlp-gui` binary (CGO); assets/ holds the icon and .desktop file
+/internal/ops        - file-level encrypt/decrypt, batch walk, atomic writes; never prints or exits (shared by CLI and GUI)
 /internal/crypto     - AES-256-GCM encrypt/decrypt core
 /internal/keystore   - keyfile + counter create/load/locate/export/import
 /internal/fileformat - .mlp header read/write
@@ -144,7 +157,7 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 
 ## Backlog (post-v0.1, not open questions — deliberately deferred)
 Scheduled into versions — see [ROADMAP.md](ROADMAP.md) for v0.2–v0.6 (batch
-mode, key rotation, `mlp info`, AUR release, `--force`, GUI, docs).
+mode, key rotation, `mlp info`, AUR release, `--force` + GUI (done), docs).
 
 Unscheduled:
 - Streaming/chunked AEAD for very large files

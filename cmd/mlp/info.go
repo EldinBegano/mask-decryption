@@ -11,6 +11,7 @@ import (
 
 	"github.com/EldinBegano/mask-decryption/internal/crypto"
 	"github.com/EldinBegano/mask-decryption/internal/fileformat"
+	"github.com/EldinBegano/mask-decryption/internal/ops"
 )
 
 func newInfoCmd() *cobra.Command {
@@ -66,7 +67,7 @@ func runInfo(inputPath string) error {
 	fmt.Printf("file:            %s\n", inputPath)
 	fmt.Printf("format version:  %d\n", fileformat.Version)
 	fmt.Printf("original ext:    %s\n", ext)
-	fmt.Printf("decrypts to:     %s\n", restoreExt(strings.TrimSuffix(inputPath, ".mlp"), hdr.Ext))
+	fmt.Printf("decrypts to:     %s\n", ops.DefaultDecryptPath(inputPath, hdr.Ext))
 	fmt.Printf("plaintext size:  %d bytes\n", payload-crypto.TagSize)
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/EldinBegano/mask-decryption/internal/crypto"
 	"github.com/EldinBegano/mask-decryption/internal/fileformat"
 	"github.com/EldinBegano/mask-decryption/internal/keystore"
+	"github.com/EldinBegano/mask-decryption/internal/ops"
 )
 
 func newRotateCmd() *cobra.Command {
@@ -93,7 +94,7 @@ func runRotate(args []string, yes bool) error {
 	}()
 
 	for _, t := range targets {
-		hdr, ciphertext, err := readMLP(t.path)
+		hdr, ciphertext, err := ops.ReadMLP(t.path)
 		if err != nil {
 			return withCode(1, err)
 		}
@@ -209,18 +210,18 @@ func collectRotateTargets(args []string) ([]rotateTarget, error) {
 			continue
 		}
 
-		walk, err := collectFiles(arg)
+		walk, err := ops.CollectFiles(arg)
 		if err != nil {
 			return nil, withCode(1, err)
 		}
-		if len(walk.failed) > 0 {
-			return nil, withCode(1, fmt.Errorf("could not read everything under %s: %w", arg, walk.failed[0]))
+		if len(walk.Failed) > 0 {
+			return nil, withCode(1, fmt.Errorf("could not read everything under %s: %w", arg, walk.Failed[0]))
 		}
-		for _, f := range walk.files {
-			if !strings.HasSuffix(f.path, ".mlp") {
+		for _, f := range walk.Files {
+			if !strings.HasSuffix(f.Path, ".mlp") {
 				continue
 			}
-			if err := add(f.path); err != nil {
+			if err := add(f.Path); err != nil {
 				return nil, err
 			}
 		}

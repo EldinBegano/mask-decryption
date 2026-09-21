@@ -47,7 +47,10 @@ jobs:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Install packaging tools
-        run: pacman -Syu --noconfirm --needed git openssh pacman-contrib namcap go
+        run: |
+          pacman -Syu --noconfirm --needed git openssh pacman-contrib namcap go
+          # build/runtime/check dependencies of mlp-gui (makepkg needs them installed)
+          pacman -S --noconfirm --needed hicolor-icon-theme libglvnd libx11 libxcursor libxi libxinerama libxkbcommon libxrandr libxxf86vm wayland xorgproto desktop-file-utils
 
       - uses: actions/checkout@v4
 
@@ -71,7 +74,7 @@ jobs:
           install -m 600 /tmp/aur_host /home/builder/.ssh/known_hosts
           chown builder:builder /home/builder/.ssh/aur /home/builder/.ssh/known_hosts
 
-      - name: Publish mlp-bin and mlp to the AUR
+      - name: Publish mlp-bin, mlp and mlp-gui to the AUR
         run: |
           set -euo pipefail
           ver="${TAG#v}"
@@ -83,4 +86,5 @@ jobs:
             cd '$GITHUB_WORKSPACE'
             packaging/aur/publish.sh mlp-bin '$ver' --push
             packaging/aur/publish.sh mlp '$ver' --push
+            packaging/aur/publish.sh mlp-gui '$ver' --push
           "

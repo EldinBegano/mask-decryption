@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=mlp
+GenericName=File Encryption
+Comment=Encrypt and decrypt files with AES-256-GCM
+Exec=mlp-gui
+Icon=mlp-gui
+Terminal=false
+Categories=Utility;Security;
+Keywords=encrypt;decrypt;mlp;cipher;
