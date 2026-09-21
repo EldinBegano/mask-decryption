@@ -10,7 +10,7 @@ Decrypt: `file.txt.mlp` → `file.txt`
 - Module: `github.com/EldinBegano/mask-decryption`
 - Binary/command name: `mlp`
 - CLI framework: cobra
-- GUI (v0.2): Fyne (pure Go, bundles with CLI)
+- GUI (v0.4, see ROADMAP.md): Fyne (pure Go, bundles with CLI)
 - License: none (private/unpublished for now, all rights reserved by default)
 - Output: plain text, no color, respects `NO_COLOR`; zero telemetry/analytics, ever.
 
@@ -67,7 +67,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 - Output file preserves original file's permission mode bits.
 - Symlink input: followed (operates on link target), standard CLI behavior.
 
-## GUI (v0.2, fast-follow after CLI)
+## GUI (v0.4, see ROADMAP.md)
 - Thin wrapper over same core library used by CLI (no duplicated crypto logic).
 - File picker to choose input file.
 - Buttons: Encrypt / Decrypt, calling same code path as CLI.
@@ -117,10 +117,13 @@ Distinct codes per failure type, for scripting:
 ```
 
 ## Backlog (post-v0.1, not open questions — deliberately deferred)
-- `--force` overwrite flag
-- `mlp info <file.mlp>` — inspect header without decrypting
+Scheduled into versions — see [ROADMAP.md](ROADMAP.md) for v0.2–v0.5 (batch
+mode, key rotation, `mlp info`, `--force`, GUI, docs).
+
+Unscheduled:
 - Streaming/chunked AEAD for very large files
-- GUI (v0.2, Fyne)
+- Automated test suite (unit + fuzz) — v0.6+
+- Password-based mode — rejected permanently, not revisited
 
 ## Open questions
 None — all resolved for v0.1.

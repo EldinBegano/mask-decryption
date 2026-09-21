@@ -6,6 +6,10 @@ builds:
     binary: mlp
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
     goos:
       - linux
       - darwin
