@@ -30,3 +30,4 @@ checksum:
 
 changelog:
   sort: asc
+  format: "{{ .Message }}"
