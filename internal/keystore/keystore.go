@@ -18,9 +18,10 @@ const (
 	KeySize   = 32 // AES-256
 	NonceSize = 12
 
-	dirName     = "mask-decryption"
-	keyFileName = "keyfile"
-	counterName = "counter"
+	dirName        = "mask-decryption"
+	keyFileName    = "keyfile"
+	counterName    = "counter"
+	oldKeyFileName = "keyfile.old"
 )
 
 // ErrKeyfileMissing is returned by LoadKey when no keyfile exists yet.
@@ -168,12 +169,14 @@ func NextNonce() (nonce [NonceSize]byte, fellBack bool, err error) {
 	if err := writeCounter(cp, next); err != nil {
 		return nonce, false, err
 	}
+	return nonceFromCounter(next), false, nil
+}
 
-	// First 4 bytes zero, last 8 bytes the counter: 2^64 values, never wraps
-	// in practice.
-	binary.BigEndian.PutUint32(nonce[0:4], 0)
-	binary.BigEndian.PutUint64(nonce[4:12], next)
-	return nonce, false, nil
+// nonceFromCounter puts v in the last 8 bytes of a zeroed 12-byte nonce:
+// 2^64 values, never wraps in practice.
+func nonceFromCounter(v uint64) (nonce [NonceSize]byte) {
+	binary.BigEndian.PutUint64(nonce[4:12], v)
+	return nonce
 }
 
 // KeyfileSHA256 returns a hex SHA-256 digest of the current keyfile, so a
@@ -291,4 +294,89 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	return writeFileFsync(dst, data, 0o600)
+}
+
+// Rotation is a new key being prepared in memory. Nothing touches disk
+// until Commit, so a rotation that fails while re-encrypting files leaves
+// the active key and counter untouched.
+type Rotation struct {
+	key  []byte
+	used uint64
+}
+
+// BeginRotation generates a fresh random key, held in memory only.
+func BeginRotation() (*Rotation, error) {
+	key := make([]byte, KeySize)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	return &Rotation{key: key}, nil
+}
+
+// Key returns the new key being prepared.
+func (r *Rotation) Key() []byte { return r.key }
+
+// NextNonce returns the next counter-based nonce under the new key.
+func (r *Rotation) NextNonce() [NonceSize]byte {
+	r.used++
+	return nonceFromCounter(r.used)
+}
+
+// Commit makes the new key active. The old key is kept as keyfile.old so
+// files stranded by a crash mid-rotation stay recoverable.
+//
+// The counter is written first, and never lowered: whichever of the two
+// writes a crash interrupts, the surviving key still has a counter at or
+// above every nonce already used under it.
+func (r *Rotation) Commit() error {
+	old, err := LoadKey()
+	if err != nil {
+		return err
+	}
+	dir, err := ConfigDir()
+	if err != nil {
+		return err
+	}
+	kp, err := keyPath()
+	if err != nil {
+		return err
+	}
+	cp, err := counterPath()
+	if err != nil {
+		return err
+	}
+
+	cur, err := readCounter(cp)
+	if err != nil {
+		cur = 0
+	}
+	if err := writeCounter(cp, max(cur, r.used)); err != nil {
+		return err
+	}
+	if err := writeFileAtomic(filepath.Join(dir, oldKeyFileName), old, 0o600); err != nil {
+		return err
+	}
+	return writeFileAtomic(kp, r.key, 0o600)
+}
+
+// OldKeyPath is where Commit keeps the previous key.
+func OldKeyPath() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, oldKeyFileName), nil
+}
+
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := writeFileFsync(tmp, data, perm); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }

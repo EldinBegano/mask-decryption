@@ -56,6 +56,7 @@ func newRootCmd() *cobra.Command {
 		newEncryptCmd(),
 		newDecryptCmd(),
 		newVerifyCmd(),
+		newRotateCmd(),
 		newKeygenCmd(),
 		newKeyfileCmd(),
 	)

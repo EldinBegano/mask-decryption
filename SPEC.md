@@ -2,8 +2,8 @@
 
 ## Purpose
 CLI tool (GUI fast-follow) to encrypt/decrypt local files with modern authenticated encryption.
-Encrypt: `file.txt` → `file.txt.mlp`
-Decrypt: `file.txt.mlp` → `file.txt`
+Encrypt: `file.txt` → `file.mlp`
+Decrypt: `file.mlp` → `file.txt`
 
 ## Language / Stack
 - Go (single static binary, cross-platform), min version: latest stable (1.23+)
@@ -29,6 +29,7 @@ Decrypt: `file.txt.mlp` → `file.txt`
 - Location: OS config dir via `os.UserConfigDir()` → `<config>/mask-decryption/keyfile`
   (Linux: `~/.config/mask-decryption/keyfile`)
 - Permissions: `0600` on creation.
+- Rotation keeps the previous key as `<config>/mask-decryption/keyfile.old` (see `mlp rotate`).
 - Auto-created on first `encrypt` if missing (no explicit `keygen` step required, but `mlp keygen` also exposed for manual regen — regen resets counter too).
 - Program locates keyfile automatically — no path input from user in normal operation.
 - **No recovery mechanism.** Lost/deleted keyfile = permanently unrecoverable data. On first key creation, CLI prints a one-time loud warning telling user to back up the keyfile.
@@ -51,8 +52,9 @@ Binary header + ciphertext:
 
 ## CLI
 ```
-mlp encrypt <file> [-o output]     # file.txt -> file.mlp (extension replaced, or custom path via -o/--output)
-mlp decrypt <file.mlp> [-o output] # file.mlp -> file.txt (original extension restored from header, or custom path via -o/--output)
+mlp encrypt <file|dir> [-o output]     # file.txt -> file.mlp (extension replaced, or custom path via -o/--output); dir = batch
+mlp decrypt <file.mlp|dir> [-o output] # file.mlp -> file.txt (original extension restored from header, or custom path via -o/--output); dir = batch
+mlp rotate <file.mlp|dir>... [-y]      # re-encrypt files under a new key, all-or-nothing (v0.2)
 mlp verify <file.mlp>              # checks auth tag/integrity, no plaintext written to disk
 mlp keygen                         # force-regenerate keyfile (with confirmation, old keyfile = old data unreadable)
 mlp keyfile export <path>          # back up keyfile to given path
@@ -63,9 +65,23 @@ mlp keyfile import <path>          # restore keyfile from given path
 - Both original and output file are kept (no auto-delete).
 - If output filename already exists: abort, don't overwrite, print error (no silent clobber).
   `--force` overwrite flag deferred to post-v0.1 (backlog).
-- Default output: one-line confirmation printed on success (e.g. `encrypted -> file.txt.mlp`). `-v/--verbose` adds step/timing detail. No progress bar (whole-file crypto is fast enough not to need one).
+- Default output: one-line confirmation printed on success (e.g. `encrypted -> file.mlp`). `-v/--verbose` adds step/timing detail. No progress bar (whole-file crypto is fast enough not to need one).
 - Output file preserves original file's permission mode bits.
 - Symlink input: followed (operates on link target), standard CLI behavior.
+
+### Batch mode (v0.2): `mlp encrypt <dir>` / `mlp decrypt <dir>`
+- Recursive, in place, one `.mlp` per file next to its source (mirrored tree, no bundled archive). Each file follows the single-file rules (keep both, never overwrite, mode bits preserved). `-o` with a directory is an error.
+- Walk: hidden files/dirs included; symlinked files followed, symlinked directories not descended into (no loops, can't leave the tree); non-regular files (pipes, sockets, devices) skipped; the keystore config directory is always skipped.
+- Encrypt skips files already ending in `.mlp` (counted in the summary, listed with `-v`). Decrypt ignores files that aren't `.mlp`.
+- Same-name collision within one run (`notes.md`, `notes.txt` both -> `notes.mlp`): the later one falls back to appending, `notes.txt.mlp`; decrypt restores both names from the header. Only collisions with files created *in this run* fall back. A pre-existing output is an error, so re-running on an encrypted folder never creates duplicates.
+- One file failing does not stop the run. Failures print as they happen, then `N encrypted, M skipped, K failed`. Exit code is the failures' shared code (e.g. 4), else 1.
+
+### `mlp rotate <file.mlp|dir>...` (v0.2)
+- Targets: `.mlp` files and/or directories (all `.mlp` inside). Symlinks resolved (the real file is replaced), duplicates collapsed. Prompts for confirmation unless `-y`.
+- All-or-nothing: every target is decrypted with the current key and re-encrypted under an in-memory new key into a `.<name>.rotate-tmp` file beside it. Any failure (exit 3 on auth failure) deletes the temps and leaves the key and every file untouched.
+- Only after all succeed: counter written (`max(old, used)`, never lowered), old key saved as `keyfile.old` (0600), new key activated, temps renamed over originals.
+- `.mlp` files not included stay on the old key and no longer decrypt with the active one; `keyfile.old` keeps them recoverable. User deletes `keyfile.old` when done.
+- A crash between key activation and the file renames is the one non-atomic window; recovery is via `keyfile.old` and any leftover `.rotate-tmp` files (a leftover blocks the next rotate until inspected).
 
 ## GUI (v0.4, see ROADMAP.md)
 - Thin wrapper over same core library used by CLI (no duplicated crypto logic).
@@ -75,7 +91,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 - Not part of v0.1 — CLI ships and stabilizes first.
 
 ## Scope (v0.1)
-- CLI only. Single file only. No directories/recursive/batch (future consideration, not now).
+- CLI only. Single file only (directories/batch arrived in v0.2, see above).
 - No password-based mode, no multi-key/multi-user support.
 
 ## Large files
@@ -84,6 +100,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 ## Edge cases
 - Encrypting a file already ending in `.mlp` → refused with error (no double-wrap).
 - File with no extension → original-extension field in header stored as empty string; decrypt restores filename with no extension.
+- Dotfiles (`.env`) have no extension: `.env` -> `.env.mlp`, restored exactly.
 
 ## Exit codes
 Distinct codes per failure type, for scripting:
@@ -96,6 +113,8 @@ Distinct codes per failure type, for scripting:
 | 4 | output file already exists |
 | 5 | input already `.mlp` (encrypt) or not `.mlp` (decrypt) |
 | 6 | `verify` failed (tamper/corruption detected) |
+
+Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared code if they all match, otherwise 1.
 
 ## CI
 - GitHub Actions: `go build` + `go vet` on every push/PR.

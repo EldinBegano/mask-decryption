@@ -4,7 +4,7 @@ Driver: v0.2–v0.4 are personal-use polish, v0.5 is docs. Automated tests are
 explicitly pushed to v0.6+ (not in this roadmap). Password-based mode is
 permanently rejected — keyfile-only stays the design.
 
-## v0.2 — Batch mode + key rotation
+## v0.2 — Batch mode + key rotation  (implemented; behavior specified in SPEC.md)
 
 ### `mlp encrypt <dir>` / `mlp decrypt <dir>`
 - Recursive walk. Per-file `.mlp`, mirrored directory structure (not a
@@ -14,6 +14,11 @@ permanently rejected — keyfile-only stays the design.
 - Encrypt: a file already ending in `.mlp` found inside the tree is
   **skipped** (noted in the end-of-run summary), not an error for the
   whole batch.
+- One failing file doesn't stop the run: failures reported, summary at
+  the end, non-zero exit.
+- `notes.md` + `notes.txt` in one folder: the second falls back to
+  `notes.txt.mlp` (only vs. files created in the same run).
+- Hidden files included; symlinked dirs not descended; keystore dir skipped.
 - Decrypt: walks the dir for `*.mlp`, restores each the same way.
 - Prints an end-of-run summary: `N encrypted, M skipped`.
 
@@ -28,6 +33,7 @@ Re-encrypts existing `.mlp` file(s) under a freshly generated key.
    re-encrypted version.
 5. Any single failure (auth fail, IO error) aborts the whole operation —
    old key stays active, nothing on disk is touched.
+6. The old key is kept as `keyfile.old` so a crash mid-swap is recoverable.
 
 This becomes the recommended path for key rotation. `mlp keygen` alone
 still exists for "I accept old files become unreadable."
