@@ -46,42 +46,66 @@ still exists for "I accept old files become unreadable."
   the header, without touching the keyfile or ciphertext. Works even with
   no keyfile present.
 
-## v0.4 — AUR release
-Ship to the Arch User Repository as two packages: **`mlp`** (builds from the
+## v0.4 — AUR release  (built; waiting on the release steps below)
+Ships to the Arch User Repository as two packages: **`mlp`** (builds from the
 tagged source) and **`mlp-bin`** (installs the prebuilt goreleaser binary).
-`mlp-bin` `provides`/`conflicts` with `mlp`.
+`mlp-bin` `provides`/`conflicts` with `mlp`. Both install the binary, the GPL
+license, and bash/zsh/fish completions.
 
 Decided:
-- Repo goes **public** (AUR's `makepkg` must download source/binaries from a
-  public URL; a private repo makes AUR impossible).
-- License: **GPL-3.0-or-later**. Add `LICENSE`, set the PKGBUILD `license`
-  field, drop "no license / all rights reserved" from SPEC.md.
-- Package name `mlp` (matches the binary and the `.mlp` extension; free on
-  AUR at time of writing, re-check before first push).
+- Repo goes **public** (`makepkg` must download from a public URL).
+- License **GPL-3.0-or-later**: `LICENSE` at the root, SPDX header in every
+  `.go` file, `license` field in both PKGBUILDs.
+- Package name `mlp`.
+- Fully automated on every stable tag, with a **dedicated CI SSH key** (not
+  the personal `~/.ssh/aur`), kept in the `AUR_SSH_KEY` GitHub secret.
+- PKGBUILDs live in this repo under `packaging/aur/`.
+- Completions installed by both packages.
 
-Work:
-- `LICENSE` file (GPL-3.0 text) in the repo root.
-- `mlp --version` (cobra `Version`, injected via goreleaser ldflags). Needed
-  for AUR sanity checks and support requests; none exists today.
-- Lower the `go` directive in `go.mod` to the true minimum. It currently
-  says `1.27.1` only because that was the local toolchain; the source
-  package builds offline in a chroot, so a directive newer than Arch's `go`
-  would fail there. (SPEC already says 1.23+.)
-- `PKGBUILD` for `mlp`: `makedepends=(go)`, builds from the release tag
-  tarball with Arch's Go flags (`-trimpath`, PIE, `-buildid=`, no CGO).
-- `PKGBUILD` for `mlp-bin`: installs the `linux_amd64` / `linux_arm64`
-  archives from the GitHub release, checksums from `checksums.txt`.
-- Install the GPL license into `/usr/share/licenses/mlp/`.
-- Validate before pushing: `namcap`, `makepkg` in a clean chroot
-  (`devtools`), and a real `pacman -U` install + `mlp` roundtrip.
-- Publish: needs an AUR account with an SSH key; first push is manual.
+Built:
+- `mlp --version` (`main.version`, injected with `-X` by goreleaser and the
+  `mlp` PKGBUILD; `dev` for a plain `go build`).
+- `go.mod` directive lowered from `1.27.1` to `1.23` (verified to build and
+  vet with Go 1.23.0).
+- goreleaser: version ldflags, completions generated in a `before` hook,
+  `LICENSE` + `completions/` in every archive.
+- `packaging/aur/mlp/PKGBUILD` (source, follows Arch's Go guidelines: PIE,
+  `-trimpath`, external linking; `check()` does a real encrypt/decrypt
+  roundtrip and a version check) and `packaging/aur/mlp-bin/PKGBUILD`.
+- `packaging/aur/publish.sh <pkg> <ver> [--push]`: rewrites `pkgver`, runs
+  `updpkgsums`, regenerates `.SRCINFO`, builds with `makepkg` (running
+  `check()`), runs `namcap` (fails on errors), then commits and pushes to the
+  AUR. Re-running an already-published version is a no-op.
+- `release.yml`: after goreleaser succeeds, an `aur` job (in an
+  `archlinux:base-devel` container) publishes both packages. It pins the AUR
+  host key to the fingerprint published on aur.archlinux.org and skips
+  pre-release tags (`-` is illegal in a `pkgver`). A manual `workflow_dispatch`
+  with `tag=vX.Y.Z` re-runs just the AUR step.
+- Verified locally: both PKGBUILDs build, pass `check()`, and produce correct
+  packages; `publish.sh` run end to end against local bare git repos.
+  **Not verified:** `namcap` (not installed here; runs in CI), a clean-chroot
+  build, and the real push to aur.archlinux.org.
 
-Open (decide when v0.4 starts):
-- Automation: goreleaser `aurs` / `aur_sources` pushing both PKGBUILDs on
-  every tag (SSH key in a GitHub secret), vs. maintaining PKGBUILDs by hand.
-- Shell completions (cobra generates bash/zsh/fish) installed by the
-  packages — proposed, not confirmed.
-- Where PKGBUILDs live (`packaging/aur/` in this repo vs. only in the AUR git).
+Release steps (need you):
+1. Commit and push this work.
+2. Add the CI public key to your AUR account (My Account, SSH Public Key, as a
+   new line/entry next to your existing key).
+3. Make the repo public (`gh repo edit --visibility public
+   --accept-visibility-change-consequences`). This exposes all history and
+   every prior release, including the author email on the commits.
+4. Tag `v0.4.0` and push the tag. goreleaser publishes the release, then the
+   `aur` job creates the `mlp` and `mlp-bin` packages.
+5. Check https://aur.archlinux.org/packages/mlp and `mlp-bin`, then
+   `yay -S mlp` (or `mlp-bin`) and run a roundtrip.
+6. If the `aur` job fails, fix it and re-run via Actions > Release > Run
+   workflow with `tag=v0.4.0`.
+
+Known limits:
+- An AUR SSH key is per account, not per package: the CI key could also push
+  to your other AUR packages (`franklyn-bin`, `franklyn-bin-dev`). It is
+  separate from your personal key, so it can be revoked on its own.
+- `mlp` `.SRCINFO` checksums come from GitHub's tag tarball; GitHub has
+  changed archive bytes before, which would need a `pkgrel` bump.
 
 ## v0.5 — `--force` flag + GUI  (was v0.4)
 - `--force` on `encrypt`/`decrypt`: overwrite an existing output file

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package fileformat reads and writes the .mlp container header:
 // magic | version | original-extension | nonce, followed by AES-256-GCM
 // ciphertext (with its tag appended) as the rest of the stream.

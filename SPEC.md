@@ -1,4 +1,4 @@
-# mask-decryption — Spec v0.1
+# mask-decryption — Spec
 
 ## Purpose
 CLI tool (GUI fast-follow) to encrypt/decrypt local files with modern authenticated encryption.
@@ -8,10 +8,10 @@ Decrypt: `file.mlp` → `file.txt`
 ## Language / Stack
 - Go (single static binary, cross-platform), min version: latest stable (1.23+)
 - Module: `github.com/EldinBegano/mask-decryption`
-- Binary/command name: `mlp`
+- Binary/command name: `mlp`; `mlp --version` prints `mlp <version>` (`dev` for an untagged build)
 - CLI framework: cobra
 - GUI (v0.5, see ROADMAP.md): Fyne, as a separate binary from the CLI (needs CGO)
-- License: GPL-3.0-or-later from v0.4 (repo goes public for the AUR release). Until then: none, all rights reserved.
+- License: GPL-3.0-or-later (`LICENSE`, SPDX header in every source file).
 - Output: plain text, no color, respects `NO_COLOR`; zero telemetry/analytics, ever.
 
 ## Crypto
@@ -131,7 +131,7 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 
 ## Distribution
 - goreleaser, cross-compiled binaries attached to GitHub releases on tag push.
-- AUR (v0.4): `mlp` (source build) and `mlp-bin` (prebuilt release binary). See ROADMAP.md.
+- AUR (v0.4): `mlp` (source build) and `mlp-bin` (prebuilt release binary), pushed automatically on each stable tag by `.github/workflows/release.yml` using `packaging/aur/`. See ROADMAP.md.
 
 ## Architecture
 ```

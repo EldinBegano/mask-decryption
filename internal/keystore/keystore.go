@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Package keystore manages the single symmetric keyfile and its
 // counter-based nonce state, located automatically in the OS config
 // directory (or MLP_CONFIG_DIR, if set) with no path input from the user.

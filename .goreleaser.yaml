@@ -1,5 +1,13 @@
 version: 2
 
+before:
+  hooks:
+    - rm -rf completions
+    - mkdir completions
+    - sh -c 'go run ./cmd/mlp completion bash > completions/mlp.bash'
+    - sh -c 'go run ./cmd/mlp completion zsh > completions/_mlp'
+    - sh -c 'go run ./cmd/mlp completion fish > completions/mlp.fish'
+
 builds:
   - id: mlp
     main: ./cmd/mlp
@@ -9,7 +17,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{ .Version }}
     goos:
       - linux
       - darwin
@@ -21,6 +29,9 @@ builds:
 archives:
   - id: mlp
     formats: [tar.gz]
+    files:
+      - LICENSE
+      - completions/*
     format_overrides:
       - goos: windows
         formats: [zip]

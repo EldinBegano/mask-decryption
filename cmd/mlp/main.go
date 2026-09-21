@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // Command mlp encrypts and decrypts files with AES-256-GCM, using a
 // single auto-managed keyfile (see internal/keystore) — no passphrase,
 // no path input required from the user in normal operation.
@@ -30,6 +32,9 @@ func withCode(code int, err error) error {
 
 var verbose bool
 
+// version is set at release time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	root := newRootCmd()
 	if err := root.Execute(); err != nil {
@@ -47,9 +52,11 @@ func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "mlp",
 		Short:         "mlp encrypts and decrypts files with AES-256-GCM",
+		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
+	root.SetVersionTemplate("{{.Name}} {{.Version}}\n")
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "print extra detail")
 
 	root.AddCommand(

@@ -4,12 +4,20 @@ on:
   push:
     tags:
       - "v*"
+  # Re-publish an existing tag to the AUR without rebuilding the GitHub release,
+  # e.g. after fixing a PKGBUILD or when the first AUR push failed.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish to the AUR, e.g. v0.4.0"
+        required: true
 
 permissions:
   contents: write
 
 jobs:
   goreleaser:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,3 +32,55 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  aur:
+    needs: goreleaser
+    # Runs after a successful release, or alone on a manual dispatch (where
+    # goreleaser is skipped). Pre-release tags (v0.5.0-rc1) are not published:
+    # "-" is not allowed in an Arch pkgver.
+    if: ${{ !cancelled() && needs.goreleaser.result != 'failure' && !contains(github.event.inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    permissions:
+      contents: read
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Install packaging tools
+        run: pacman -Syu --noconfirm --needed git openssh pacman-contrib namcap go
+
+      - uses: actions/checkout@v4
+
+      - name: Prepare builder user and AUR SSH access
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::error::AUR_SSH_KEY secret is not set"
+            exit 1
+          fi
+          useradd -m builder
+          install -d -m 700 -o builder -g builder /home/builder/.ssh
+          umask 077
+          printf '%s\n' "$AUR_SSH_KEY" > /home/builder/.ssh/aur
+
+          # Trust only the AUR host key published on https://aur.archlinux.org
+          ssh-keyscan -t ed25519 aur.archlinux.org > /tmp/aur_host
+          ssh-keygen -lf /tmp/aur_host | grep -q 'SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4'
+          install -m 600 /tmp/aur_host /home/builder/.ssh/known_hosts
+          chown builder:builder /home/builder/.ssh/aur /home/builder/.ssh/known_hosts
+
+      - name: Publish mlp-bin and mlp to the AUR
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          chmod -R a+rX "$GITHUB_WORKSPACE"
+          su builder -c "
+            set -euo pipefail
+            git config --global user.name 'github-actions[bot]'
+            git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            cd '$GITHUB_WORKSPACE'
+            packaging/aur/publish.sh mlp-bin '$ver' --push
+            packaging/aur/publish.sh mlp '$ver' --push
+          "
