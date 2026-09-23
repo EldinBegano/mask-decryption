@@ -2,6 +2,9 @@
 
 // Package fileformat reads and writes the .mlp container header, followed by
 // AES-256-GCM ciphertext (with its tag appended) as the rest of the stream.
+// The ciphertext is the AEAD output of whatever plaintext was fed to it —
+// this package has no idea whether that plaintext was compressed first; see
+// Header.Compressed and package ops, which does the compressing.
 //
 // Version 1: magic | version | ext | nonce
 // Version 2: magic | version | flags | ext | nonce | [mtime | atime]
@@ -10,8 +13,19 @@
 // are present; a version 2 header written for a file whose original
 // timestamps aren't known (e.g. mlp rotate on a version 1 source) omits
 // them rather than inventing a value. Version 1 files are always read as
-// having no timestamps. Both versions decrypt; WriteHeader always writes
-// the current version.
+// having no timestamps. flagCompressed says the plaintext was zstd-compressed
+// before encryption. Both flags live in the same byte introduced for
+// timestamps, so adding compression didn't need another version bump.
+//
+// ReadHeader rejects a version 2 header with any flag bit it doesn't
+// recognize (ErrUnknownFlags), rather than silently ignoring it: an older
+// binary that doesn't understand a bit would otherwise decrypt successfully
+// but hand back the wrong plaintext (e.g. still-compressed bytes) with no
+// error. This guards future flags; it can't help a binary released before
+// the check existed (mlp v0.6, which predates flagCompressed, has no such
+// guard and will silently produce wrong output on a compressed file).
+//
+// Both versions decrypt; WriteHeader always writes the current version.
 package fileformat
 
 import (
@@ -27,6 +41,8 @@ const (
 	Version             byte = 0x02 // current: flags byte, optional timestamps
 
 	flagTimestamps byte = 1 << 0
+	flagCompressed byte = 1 << 1
+	knownFlags     byte = flagTimestamps | flagCompressed
 
 	NonceSize = 12
 	MaxExtLen = 255
@@ -37,8 +53,9 @@ const (
 var magic = [4]byte{'M', 'L', 'P', '1'}
 
 var (
-	ErrBadMagic   = errors.New("not a valid .mlp file")
-	ErrBadVersion = errors.New("unsupported .mlp format version")
+	ErrBadMagic    = errors.New("not a valid .mlp file")
+	ErrBadVersion  = errors.New("unsupported .mlp format version")
+	ErrUnknownFlag = errors.New("fileformat: header sets a flag this build doesn't understand (file made by a newer mlp?)")
 )
 
 // Header is the fixed metadata stored at the start of every .mlp file.
@@ -51,6 +68,10 @@ type Header struct {
 	// time. Zero if unknown: either read from a version 1 file, or from a
 	// version 2 file whose header was written without them (see above).
 	ModTime, AccessTime time.Time
+
+	// Compressed reports whether the plaintext was zstd-compressed before
+	// encryption; package ops decompresses after decrypting when set.
+	Compressed bool
 }
 
 // HasTimestamps reports whether h carries a stored mtime/atime.
@@ -80,6 +101,9 @@ func WriteHeader(w io.Writer, h Header) error {
 	var flags byte
 	if h.HasTimestamps() {
 		flags |= flagTimestamps
+	}
+	if h.Compressed {
+		flags |= flagCompressed
 	}
 
 	if _, err := w.Write(magic[:]); err != nil {
@@ -136,6 +160,10 @@ func ReadHeader(r io.Reader) (Header, error) {
 			return h, fmt.Errorf("fileformat: %w", err)
 		}
 		flags = flagByte[0]
+		if flags&^knownFlags != 0 {
+			return h, ErrUnknownFlag
+		}
+		h.Compressed = flags&flagCompressed != 0
 	}
 
 	var extLen [1]byte

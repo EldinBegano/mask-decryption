@@ -216,29 +216,81 @@ Known limits:
 - The header is unauthenticated (true of the extension field since v0.1
   too): a tampered timestamp isn't caught by `verify`.
 
-## v0.7 — Investigate shrinking `.mlp` output
-Exploratory, not a committed feature yet — "look if we can make the file a
-little smaller like 7z."
+## v0.7 — Shrink `.mlp` output  (built; behavior specified in SPEC.md)
+Started exploratory — "look if we can make the file a little smaller like
+7z" — and landed as a real feature.
 
-Key constraint to design around: **compression must happen before
-encryption, on the plaintext.** AES-GCM ciphertext is high-entropy and
-does not compress — compressing the `.mlp` output after the fact would
-gain nothing. So this means compress-then-encrypt, decrypt-then-decompress.
+Key constraint: **compression happens before encryption, on the
+plaintext.** AES-GCM ciphertext is high-entropy and doesn't compress —
+compressing the `.mlp` output after the fact would gain nothing. So this
+is compress-then-encrypt, decrypt-then-decompress.
 
-Open questions for when v0.7 starts:
-- Algorithm: zstd (best ratio/speed trade-off, `klauspost/compress` pure Go,
-  no CGO) vs gzip (stdlib, slower/worse ratio) vs xz/lzma (best ratio,
-  slow, CGO or a heavier pure-Go port).
-- Already-compressed input (jpg, mp4, zip, an already-encrypted file) will
-  often come out the same size or *larger* after compression, plus the
-  header overhead. Needs a "try it, keep the compressed form only if it's
-  actually smaller" rule, with a header flag recording which was used —
-  another `fileformat` version bump (`0x03`), same backward-compat
-  requirement as v0.6.
-- Whether this is default-on, a flag (`--compress`), or automatic-per-file
-  (the "try it and see" rule above, which makes an explicit flag close to
-  unnecessary).
-- Whether `mlp info` reports the compression ratio achieved.
+Decided:
+- Algorithm: zstd, via `klauspost/compress/zstd`. Pinned to **v1.18.4**,
+  not `@latest` — v1.19+ needs Go 1.24, and later v1.18.x patches (`.5`
+  onward) need 1.24 too; v1.18.4 is the newest one that still only needs
+  1.23, matching the floor already promised in SPEC.md. `go mod tidy`
+  re-resolved this to latest twice while wiring the import in; both times
+  it was caught by re-checking `go.mod` after tidying, not assumed.
+- Policy: automatic, always try, keep the compressed form only if it's
+  smaller — no flag. Matches 7z's own store-vs-deflate choice per file.
+- `mlp info`: no compression reporting (ratio, algorithm) added.
+
+Built:
+- No new `fileformat` version: v0.6 already introduced an extensible flags
+  byte, so compression reuses it as bit 1 (`flagCompressed`) instead of
+  needing a version bump to `0x03` as originally guessed above.
+- **Real gap found and fixed while designing this:** `ReadHeader` (v0.6)
+  silently ignored any flag bit it didn't recognize. That's fine as long
+  as no second bit exists — but the moment `flagCompressed` shipped, an
+  old v0.6 binary opening a v0.7 file would decrypt successfully and
+  silently write out still-compressed garbage, no error. Fixed by having
+  `ReadHeader` reject any version-`0x02` header with an unrecognized flag
+  bit (`ErrUnknownFlag`). This protects v0.7+ binaries against a future
+  v0.8+ flag the same way; it cannot retroactively patch v0.6 binaries
+  already installed — documented as a known gap of that release.
+- `internal/ops/compress.go`: `maybeCompress`/`decompress`, one-shot
+  `EncodeAll`/`DecodeAll` (matches the project's whole-file, non-streaming
+  model). `EncryptFile` compresses before `crypto.Encrypt` if it shrinks
+  the data; `DecryptFile` decompresses after `crypto.Decrypt` when the
+  header says to. Batch and `--force` needed no changes — they already go
+  through these two functions.
+- **Second real bug found and fixed:** `mlp rotate` re-encrypts by calling
+  `crypto.Decrypt`/`crypto.Encrypt` directly, not through
+  `internal/ops`, and built its own new `fileformat.Header`. It already
+  needed fixing once for v0.6 (to carry timestamps through) and needed the
+  same fix again here — it wasn't copying `Compressed` into the new
+  header, which would have re-encrypted already-compressed bytes under a
+  header claiming they weren't compressed: correct ciphertext, wrong flag,
+  silent corruption on the next decrypt.
+- `mlp info`'s size field renamed `plaintext size:` → `stored size:`: for
+  a compressed file the old label was actively wrong (it reported the
+  compressed size while claiming to be the original), and `info` has no
+  way to learn the true original size without the key. This is a
+  correctness fix, not new compression reporting — it doesn't say whether
+  compression was used, just stops overclaiming about the number it
+  already showed.
+
+Verified: the existing 20-check v0.6 regression script still passes,
+including the section that (correctly) started giving an unknown-flag
+error at an earlier step than before, since the "unknown flag = reject"
+guard now fires. A new 14-check script covers: a highly compressible file
+lands well under its own plaintext size; random/incompressible data adds
+only the fixed header+tag overhead (no penalty); already-gzipped input
+doesn't grow; a mixed batch (compressible + incompressible together)
+round-trips correctly; rotating a compressed file stays small after
+rotation instead of re-inflating, and its content is still correct after;
+a hand-set future flag bit is rejected by both `info` and `decrypt`, with
+no output file written. Full build + `go vet` on the default toolchain,
+the Go 1.23.0 minimum, and cross-compiled for linux/darwin/windows.
+
+Known limits:
+- No streaming: whole file loaded into memory for compression too, same
+  as encryption (see "Large files").
+- `mlp v0.6` binaries cannot safely decrypt a `.mlp` file compressed by
+  v0.7+ — see "real gap found and fixed" above.
+- Compression level is zstd's default speed/ratio tradeoff
+  (`SpeedDefault`); not configurable, not asked about.
 
 ## v0.8 — Docs  (was v0.6)
 - `README.md`: install (including `yay -S mlp`), quick start, full command

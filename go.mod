@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	fyne.io/fyne/v2 v2.8.1
+	github.com/klauspost/compress v1.18.4
 	github.com/spf13/cobra v1.10.2
 )
 

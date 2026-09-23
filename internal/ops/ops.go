@@ -133,13 +133,22 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		return res, wrap(KindOther, err)
 	}
 
+	// Compression happens here, before encryption: AES-GCM ciphertext is
+	// high-entropy and doesn't compress at all, so it has to be the
+	// plaintext. Kept only if it actually helped (already-compressed
+	// input like jpg/mp4/zip usually doesn't shrink).
+	packed, compressed, err := maybeCompress(plaintext)
+	if err != nil {
+		return res, wrap(KindOther, err)
+	}
+
 	nonce, fellBack, err := keystore.NextNonce()
 	if err != nil {
 		return res, wrap(KindOther, err)
 	}
 	res.NonceFallback = fellBack
 
-	ciphertext, err := crypto.Encrypt(key, nonce[:], plaintext)
+	ciphertext, err := crypto.Encrypt(key, nonce[:], packed)
 	if err != nil {
 		return res, wrap(KindOther, err)
 	}
@@ -149,6 +158,7 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		Nonce:      nonce,
 		ModTime:    info.ModTime(),
 		AccessTime: accessTime(info),
+		Compressed: compressed,
 	}
 	err = writeFile(outputPath, info.Mode().Perm(), overwrite, func(w io.Writer) error {
 		if err := fileformat.WriteHeader(w, hdr); err != nil {
@@ -193,6 +203,12 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 	plaintext, err := crypto.Decrypt(key, hdr.Nonce[:], ciphertext)
 	if err != nil {
 		return res, wrap(KindAuth, fmt.Errorf("%s: %w", inputPath, err))
+	}
+	if hdr.Compressed {
+		plaintext, err = decompress(plaintext)
+		if err != nil {
+			return res, wrap(KindOther, fmt.Errorf("%s: %w", inputPath, err))
+		}
 	}
 
 	if outputPath == "" {

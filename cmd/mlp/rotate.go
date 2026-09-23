@@ -116,7 +116,12 @@ func runRotate(args []string, yes bool) error {
 		}
 		pending = append(pending, pendingRotate{tmp: tmp, dst: t.path})
 
-		newHdr := fileformat.Header{Ext: hdr.Ext, Nonce: nonce, ModTime: hdr.ModTime, AccessTime: hdr.AccessTime}
+		// Rotate only swaps the key: the decrypted payload (plaintext, or still
+		// zstd-compressed plaintext if hdr.Compressed) is re-encrypted exactly
+		// as-is, so the new header must carry the same Compressed flag through
+		// — dropping it would leave compressed bytes on disk with a header
+		// that says "not compressed", corrupting the next decrypt.
+		newHdr := fileformat.Header{Ext: hdr.Ext, Nonce: nonce, ModTime: hdr.ModTime, AccessTime: hdr.AccessTime, Compressed: hdr.Compressed}
 		werr := fileformat.WriteHeader(f, newHdr)
 		if werr == nil {
 			_, werr = f.Write(sealed)

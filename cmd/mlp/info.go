@@ -69,7 +69,10 @@ func runInfo(inputPath string) error {
 	fmt.Printf("format version:  %d\n", hdr.Version)
 	fmt.Printf("original ext:    %s\n", ext)
 	fmt.Printf("decrypts to:     %s\n", ops.DefaultDecryptPath(inputPath, hdr.Ext))
-	fmt.Printf("plaintext size:  %d bytes\n", payload-crypto.TagSize)
+	// Not "plaintext size": if the file was compressed before encryption
+	// (v0.7+), this is the stored (compressed) size, not the original file's
+	// size — and info never decrypts, so it has no way to know that size.
+	fmt.Printf("stored size:     %d bytes\n", payload-crypto.TagSize)
 	if hdr.HasTimestamps() {
 		fmt.Printf("modified:        %s\n", hdr.ModTime.Local().Format(time.RFC3339))
 		fmt.Printf("accessed:        %s\n", hdr.AccessTime.Local().Format(time.RFC3339))

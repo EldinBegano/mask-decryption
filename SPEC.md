@@ -50,19 +50,21 @@ Binary header + ciphertext. Two versions exist; `ReadHeader` accepts both, `Writ
 | Nonce | 12 bytes | GCM nonce, counter-derived (or random fallback if counter state was lost) |
 | Ciphertext+Tag | remainder | AES-256-GCM output (tag appended) |
 
-**Version `0x02`** (current, v0.6+): adds a flags byte and, when its `flagTimestamps` bit is set, the source file's mtime and atime.
+**Version `0x02`** (current, v0.6+): adds a flags byte. Bit 0 (`flagTimestamps`, v0.6) says the mtime/atime fields follow; bit 1 (`flagCompressed`, v0.7) says the plaintext was zstd-compressed before encryption. Both share this one version — adding compression didn't need another bump, since the byte layout it needs (a flags byte that can gain more bits) already existed.
 
 | Field | Size | Notes |
 |---|---|---|
 | Magic | 4 bytes | `"MLP1"` |
 | Version | 1 byte | `0x02` |
-| Flags | 1 byte | bit 0 = timestamps follow after the nonce |
+| Flags | 1 byte | bit 0 = timestamps follow after the nonce; bit 1 = plaintext was compressed. Any other bit set → `ErrUnknownFlag`, not silently ignored (see below) |
 | Original extension | length-prefixed (1 byte len + UTF-8 bytes) | e.g. `"txt"`, restores extension on decrypt |
 | Nonce | 12 bytes | GCM nonce, counter-derived (or random fallback if counter state was lost) |
 | ModTime, AccessTime | 12 bytes each (int64 unix seconds + uint32 nanoseconds), only if the timestamps flag is set | omitted when re-encrypting a v1 file whose original timestamps were never known (e.g. `mlp rotate`) — never fabricated |
-| Ciphertext+Tag | remainder | AES-256-GCM output (tag appended) |
+| Ciphertext+Tag | remainder | AES-256-GCM output of the (possibly compressed) plaintext, tag appended |
 
-None of the header (extension, nonce, timestamps) is authenticated by GCM — only the ciphertext is. A tampered extension or timestamp isn't detected by `verify`; this was already true of the extension field before v0.6.
+None of the header (extension, nonce, timestamps, compressed flag) is authenticated by GCM — only the ciphertext is. A tampered extension or timestamp isn't detected by `verify`; this was already true of the extension field before v0.6.
+
+`ReadHeader` rejects a version `0x02` header with any flag bit outside `flagTimestamps | flagCompressed`, rather than ignoring it: an older binary that doesn't recognize a bit would otherwise decrypt successfully but hand back the wrong plaintext (e.g. still-compressed bytes written out raw) with no error at all. This guards future flag bits from v0.8 onward. It can't help **mlp v0.6 binaries already released** — they predate this check and have no such guard, so a v0.6 binary opening a v0.7-compressed file will silently produce corrupt (still-compressed) output. Not fixable after the fact; documented as a known gap of the v0.6 release.
 
 - Decrypt reads header, restores original extension automatically — user doesn't retype it.
 
@@ -72,7 +74,7 @@ mlp encrypt <file|dir> [-o output] [-f]     # file.txt -> file.mlp (extension re
 mlp decrypt <file.mlp|dir> [-o output] [-f] # file.mlp -> file.txt (original extension restored from header, or custom path via -o/--output); dir = batch
 mlp rotate <file.mlp|dir>... [-y]      # re-encrypt files under a new key, all-or-nothing (v0.2)
 mlp verify <file.mlp>              # checks auth tag/integrity, no plaintext written to disk
-mlp info <file.mlp>                # show header (format version, original extension, decrypts-to name, plaintext size); no key needed (v0.3)
+mlp info <file.mlp>                # show header (format version, original extension, decrypts-to name, stored size); no key needed (v0.3)
 mlp keygen                         # force-regenerate keyfile (with confirmation, old keyfile = old data unreadable)
 mlp keyfile export <path>          # back up keyfile to given path
 mlp keyfile import <path>          # restore keyfile from given path
@@ -108,7 +110,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 - A crash between key activation and the file renames is the one non-atomic window; recovery is via `keyfile.old` and any leftover `.rotate-tmp` files (a leftover blocks the next rotate until inspected).
 
 ### `mlp info <file.mlp>` (v0.3, timestamps added v0.6)
-- Reads only the header: format version (the file's actual version, `1` or `2` — not the tool's current write version), original extension (`(none)` if empty), the filename `decrypt` would produce, plaintext size (file size minus header minus the 16-byte GCM tag), and, if stored, the mtime/atime in local time (RFC 3339). A file with no stored timestamps (v1, or rotated from one) prints `timestamps:      (not stored)` instead.
+- Reads only the header: format version (the file's actual version, `1` or `2` — not the tool's current write version), original extension (`(none)` if empty), the filename `decrypt` would produce, stored size (file size minus header minus the 16-byte GCM tag — the *compressed* size if the file used compression, v0.7+; `info` never decrypts, so it can't show the true original size for a compressed file), and, if stored, the mtime/atime in local time (RFC 3339). A file with no stored timestamps (v1, or rotated from one) prints `timestamps:      (not stored)` instead.
 - Never touches the keystore, so it works with no keyfile, and creates nothing. It cannot detect tampering (ciphertext isn't authenticated without the key) — `mlp verify` does that.
 - Exit 5 if the name doesn't end in `.mlp`; exit 1 for bad magic, unsupported version, truncated header, or a file too short to hold the auth tag.
 
@@ -125,12 +127,18 @@ A separate desktop binary, built from `cmd/mlp-gui` with Fyne. It is a thin fron
 - `mlp-gui --version` prints `mlp-gui <version>` without opening a window.
 - Needs CGO and system GL/X11/Wayland libraries, so it is not part of the CLI build, the goreleaser archives, or `mlp`/`mlp-bin`. Linux only for now (AUR `mlp-gui`); no macOS/Windows builds.
 
+## Compression (v0.7)
+- Automatic, no flag: `encrypt` always zstd-compresses the plaintext first (`klauspost/compress/zstd`, pinned to v1.18.4 — the newest patch that still needs only Go 1.23; later patches raise their own `go` directive to 1.24+), then keeps the compressed form only if it's actually smaller than the raw bytes. Otherwise the raw bytes are stored — same idea as 7z's own store-vs-deflate choice per file. Already-compressed input (jpg, mp4, zip, another `.mlp`) commonly doesn't shrink and is stored raw.
+- Which happened is recorded in the header's `flagCompressed` bit (see File format); `decrypt` reads it and decompresses after the AEAD step, transparently. `mlp info` does not report whether a file was compressed or by how much (kept out of scope for this version) — it does still label its size field `stored size:` rather than `plaintext size:`, since for a compressed file that's what it actually is (see File format for why `info`, which never decrypts, can't show the true original size).
+- `mlp rotate` never decompresses/recompresses: it moves the exact decrypted bytes (compressed or not) to a new key and carries `Compressed` through in the new header unchanged.
+- No new command-line surface: this only touches what `encrypt`/`decrypt` do internally, including in batch mode.
+
 ## Scope (v0.1)
 - CLI only. Single file only (directories/batch arrived in v0.2, see above).
 - No password-based mode, no multi-key/multi-user support.
 
 ## Large files
-- Whole-file AES-256-GCM: entire file loaded into memory, single seal/open call. Fine for typical personal files. No streaming/chunked AEAD in v0.1 (revisit if very-large-file use case shows up).
+- Whole-file AES-256-GCM: entire file loaded into memory, single seal/open call. Fine for typical personal files. No streaming/chunked AEAD in v0.1 (revisit if very-large-file use case shows up). Compression (v0.7) is also whole-file/in-memory, same constraint.
 
 ## Edge cases
 - Encrypting a file already ending in `.mlp` → refused with error (no double-wrap).
@@ -168,6 +176,7 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 /cmd/mlp-gui         - Fyne desktop app, builds the `mlp-gui` binary (CGO); assets/ holds the icon and .desktop file
 /internal/ops        - file-level encrypt/decrypt, batch walk, atomic writes; never prints or exits (shared by CLI and GUI)
                         atime_{linux,darwin,windows,other}.go - per-OS access-time extraction (os.FileInfo doesn't expose it portably)
+                        compress.go - zstd compress-if-smaller / decompress (v0.7)
 /internal/crypto     - AES-256-GCM encrypt/decrypt core
 /internal/keystore   - keyfile + counter create/load/locate/export/import
 /internal/fileformat - .mlp header read/write
@@ -175,8 +184,8 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 
 ## Backlog (post-v0.1, not open questions — deliberately deferred)
 Scheduled into versions — see [ROADMAP.md](ROADMAP.md) for v0.2–v0.9 (batch
-mode, key rotation, `mlp info`, AUR release, `--force` + GUI (done),
-timestamp preservation, output-size investigation, docs, tests).
+mode, key rotation, `mlp info`, AUR release, `--force` + GUI, timestamp
+preservation, compression (all done), docs, tests).
 
 Unscheduled:
 - Streaming/chunked AEAD for very large files
