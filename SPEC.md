@@ -80,11 +80,12 @@ mlp decrypt <file.mlp|dir> [-o output] [-f] # file.mlp -> file.txt (original ext
 mlp rotate <file.mlp|dir>... [-y]      # re-encrypt files under a new key, all-or-nothing (v0.2)
 mlp verify <file.mlp>              # checks auth tag/integrity, no plaintext written to disk
 mlp info <file.mlp>                # show header (format version, original extension, decrypts-to name, stored size); no key needed (v0.3)
-mlp keygen                         # force-regenerate keyfile (with confirmation, old keyfile = old data unreadable)
+mlp keygen                         # force-regenerate keyfile (with confirmation; old key kept as keyfile.old, not lost)
 mlp keyfile export <path>          # back up keyfile to given path
 mlp keyfile import <path>          # restore keyfile from given path
 ```
-- Built with cobra.
+- Built with cobra. Every command has a real `Long` description (not just `Short`), which also drives the generated man pages (v0.8, see Distribution) — one source of truth for both.
+- `mlp gendoc <dir>` also exists, generating those man pages; it's hidden from `--help` since it's a build-time tool, not something to run day to day.
 - `-o/--output` lets user redirect output location/filename; default is fixed naming next to input.
 - Both original and output file are kept (no auto-delete).
 - If output filename already exists: abort, don't overwrite, print error (no silent clobber). `-f/--force` replaces it instead (v0.5, below). Checked as early as possible — right after the output path is known (which for decrypt only needs the header's stored extension, not the key) and before any key fetch or decryption — so this cheap, local check reports first if it's the real blocker rather than being masked by a `getKey()` failure that would otherwise be hit first.
@@ -172,8 +173,9 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 - Minimal/none formally required for v0.1 — manual verification of encrypt/decrypt roundtrip, tamper detection, wrong/missing-keyfile behavior. Revisit adding unit + fuzz tests post-v0.1.
 
 ## Distribution
-- goreleaser, cross-compiled binaries attached to GitHub releases on tag push.
-- AUR: `mlp` (source build), `mlp-bin` (prebuilt release binary) and `mlp-gui` (source build of the GUI, v0.5), pushed automatically on each stable tag by `.github/workflows/release.yml` using `packaging/aur/`. See ROADMAP.md.
+- goreleaser, cross-compiled binaries attached to GitHub releases on tag push. Every release archive includes `LICENSE`, shell completions (`completions/`), and man pages (`man/`, one per command, v0.8+).
+- AUR: `mlp` (source build), `mlp-bin` (prebuilt release binary) and `mlp-gui` (source build of the GUI, v0.5), pushed automatically on each stable tag by `.github/workflows/release.yml` using `packaging/aur/`. Both `mlp` and `mlp-bin` install the man pages to `/usr/share/man/man1/`. See ROADMAP.md.
+- `README.md` (v0.8): install, quick start, command reference, exit codes — the user-facing counterpart to this file.
 
 ## Architecture
 ```

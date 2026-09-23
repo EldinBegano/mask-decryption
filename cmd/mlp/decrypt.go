@@ -16,8 +16,21 @@ func newDecryptCmd() *cobra.Command {
 	var output string
 	var force bool
 	cmd := &cobra.Command{
-		Use:           "decrypt <file.mlp|dir>",
-		Short:         "Decrypt a .mlp file (or every .mlp file in a directory, recursively)",
+		Use:   "decrypt <file.mlp|dir>",
+		Short: "Decrypt a .mlp file (or every .mlp file in a directory, recursively)",
+		Long: `Decrypt a .mlp file using the auto-managed keyfile. The original
+filename, permission bits, and stored timestamps (if any) are restored.
+If the file was compressed at encrypt time, it's transparently
+decompressed here.
+
+A tampered or corrupted file fails loudly (auth failure, exit 3) — nothing
+is ever written under a header that doesn't match its ciphertext.
+
+Given a directory, every .mlp file under it (recursively) is decrypted the
+same way; files that aren't .mlp are ignored. One file failing does not
+stop the rest.
+
+Refuses to overwrite an existing output file unless --force is given.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,

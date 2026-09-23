@@ -15,8 +15,18 @@ import (
 func newKeygenCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:           "keygen",
-		Short:         "Generate a new keyfile (the old one is kept as keyfile.old; files under it need it restored to decrypt)",
+		Use:   "keygen",
+		Short: "Generate a new keyfile",
+		Long: `Generate a fresh random keyfile and make it the active one.
+
+If a keyfile already exists, it's kept as keyfile.old next to it first
+(with its counter left untouched, not reset) — .mlp files encrypted under
+it need it restored to keyfile before they'll decrypt again, but that's
+recoverable by hand, not permanent.
+
+For re-encrypting specific files under a new key instead of starting over,
+use 'mlp rotate' — it keeps them readable under the new key directly,
+without a manual restore.`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

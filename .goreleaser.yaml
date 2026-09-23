@@ -7,6 +7,8 @@ before:
     - sh -c 'go run ./cmd/mlp completion bash > completions/mlp.bash'
     - sh -c 'go run ./cmd/mlp completion zsh > completions/_mlp'
     - sh -c 'go run ./cmd/mlp completion fish > completions/mlp.fish'
+    - rm -rf man
+    - sh -c 'go run ./cmd/mlp gendoc man'
 
 builds:
   - id: mlp
@@ -32,6 +34,7 @@ archives:
     files:
       - LICENSE
       - completions/*
+      - man/*
     format_overrides:
       - goos: windows
         formats: [zip]

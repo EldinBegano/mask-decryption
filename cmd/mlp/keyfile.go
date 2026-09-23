@@ -18,6 +18,7 @@ func newKeyfileCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "keyfile",
 		Short:         "Back up or restore the keyfile",
+		Long:          `Back up or restore the keyfile and its nonce counter. See the export and import subcommands.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
@@ -27,8 +28,16 @@ func newKeyfileCmd() *cobra.Command {
 
 func newKeyfileExportCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:           "export <path>",
-		Short:         "Copy the keyfile and counter state to <path> for backup",
+		Use:   "export <path>",
+		Short: "Copy the keyfile and counter state to <path> for backup",
+		Long: `Copy the keyfile and its nonce counter into <path> (created if needed),
+bundled together so a later import continues the counter correctly instead
+of risking nonce reuse. Prints the exported keyfile's SHA-256 so you can
+verify a copy (e.g. onto a USB stick) matches.
+
+This is the only way to protect against keyfile loss: there is no other
+recovery mechanism. Run it right after the first encrypt creates a
+keyfile, and again after any 'mlp keygen' or 'mlp rotate'.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -57,8 +66,14 @@ func runKeyfileExport(dest string) error {
 func newKeyfileImportCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
-		Use:           "import <path>",
-		Short:         "Restore a keyfile and counter state backup from <path>",
+		Use:   "import <path>",
+		Short: "Restore a keyfile and counter state backup from <path>",
+		Long: `Install a keyfile+counter backup from <path> (as written by 'mlp keyfile
+export') into the config directory, making it the active key.
+
+If a keyfile already exists, it's kept as keyfile.old (with its matching
+counter as counter.old) first — restoring the wrong backup by mistake is
+then recoverable by hand, not permanent.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,

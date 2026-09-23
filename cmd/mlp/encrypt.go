@@ -20,8 +20,23 @@ func newEncryptCmd() *cobra.Command {
 	var output string
 	var force bool
 	cmd := &cobra.Command{
-		Use:           "encrypt <file|dir>",
-		Short:         "Encrypt a file (or every file in a directory, recursively) into .mlp files",
+		Use:   "encrypt <file|dir>",
+		Short: "Encrypt a file (or every file in a directory, recursively) into .mlp files",
+		Long: `Encrypt a file with AES-256-GCM, using the auto-managed keyfile (no
+passphrase). notes.txt becomes notes.mlp; the original extension is stored
+in the header and restored on decrypt.
+
+Compression is tried automatically and kept only if it actually shrinks the
+file. The source file's permission bits, modification time and access time
+are also stored, and restored on decrypt.
+
+Given a directory, every regular file under it (recursively, hidden files
+included) is encrypted the same way, each to its own .mlp beside it. A file
+already ending in .mlp is skipped, not re-encrypted. One file failing does
+not stop the rest: after the run, a line like "N encrypted, M skipped, K
+failed" summarizes it.
+
+Refuses to overwrite an existing output file unless --force is given.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,

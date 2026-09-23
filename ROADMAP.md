@@ -434,11 +434,61 @@ the new ordering. Full rebuild of all prior regression scripts
 + `go vet` clean on the default toolchain, the Go 1.23.0 minimum, and
 cross-compiled for linux/darwin/windows.
 
-## v0.8 — Docs  (was v0.6)
-- `README.md`: install (including `yay -S mlp`), quick start, full command
-  reference, the "no recovery if keyfile is lost" warning stated up front.
-- Man page: generated and shipped via goreleaser alongside release
-  binaries, and installed by the AUR packages.
+## v0.8 — Docs  (was v0.6; built, behavior specified in SPEC.md)
+- `README.md`: no-recovery warning up front, install (`yay -S mlp` /
+  `mlp-bin` / `mlp-gui`, plus build from source), quick start, a "how it
+  works, briefly" summary, a full command reference (one section per
+  command, every example run for real and checked against actual output,
+  not just written to look plausible), the exit code table, and a note on
+  `mlp-gui`.
+- Every CLI command gained a real `Long` description (previously most had
+  only a one-line `Short`) — single source of truth for both `--help` and
+  the generated man pages, so writing one didn't mean maintaining two.
+- Man pages: a new hidden `mlp gendoc <dir>` command (`cobra/doc`'s
+  `GenManTree`, correctly excludes hidden commands like itself from the
+  generated tree — verified, not assumed) generates one page per command,
+  16 total including `completion`'s own subcommands. Wired into
+  `.goreleaser.yaml`'s `before.hooks` next to the existing completions
+  generation, shipped in every release archive under `man/`, and installed
+  by both `mlp` and `mlp-bin`'s PKGBUILDs to `/usr/share/man/man1/`.
+- Adding `cobra/doc` pulled in `go-md2man`, `blackfriday` and a `yaml`
+  package as new indirect dependencies (only `go-md2man`/`blackfriday` are
+  actually exercised, via `GenManTree`) — checked after tidying, same as
+  every other dependency change this project has made: `go 1.23` held,
+  it wasn't silently bumped.
+
+Also fixed while verifying packaging for this, unrelated to docs
+specifically: `mlp-bin`'s PKGBUILD had no `depends=('glibc')` line — a
+`namcap` **error** (not just a warning), present since v0.4, only caught
+now because this was the first time `namcap` ran against a *rebuilt*
+`mlp-bin` package in this session rather than a cached earlier one. Fixed
+by adding it, matching `mlp`'s PKGBUILD, which already had it.
+
+One thing chased down that turned out not to be a bug: installing the
+built `mlp` package inside the plain `archlinux:base-devel` Docker image
+and running `man mlp-encrypt` initially found nothing — `/usr/share/man`
+didn't even exist after `pacman -U`. Traced to the *test image's own*
+`pacman.conf`, which sets `NoExtract = usr/share/man/* usr/share/info/*`
+to keep container images small — a Docker-specific default, not something
+a real Arch installation has. Confirmed by removing that line and
+reinstalling: `man mlp` and `man mlp-encrypt` both render correctly.
+Nothing about the packaging needed to change.
+
+Verified: every man page renders correctly via `man -l` and, after a real
+`pacman -U` (with the container's `NoExtract` line removed to match a real
+system), via plain `man mlp`/`man mlp-encrypt`. Both `mlp` and `mlp-bin`
+PKGBUILDs rebuilt and repackaged cleanly in the CI Arch container against
+the real archive shapes (source tarball for `mlp`, a goreleaser-shaped
+release archive built locally for `mlp-bin`, since it never builds from
+source). `namcap` on both: zero errors (previously one, on `mlp-bin`);
+only the same pre-existing warnings as earlier versions (unsigned prebuilt
+Go binary lacking PIE/full RELRO — expected, not actionable). Every
+README example command was actually run against a real build and its
+output compared to what's written, not just composed to look right. Full
+build + `go vet` clean on the default toolchain, the Go 1.23.0 minimum,
+and cross-compiled for linux/darwin/windows; `goreleaser check` and a full
+snapshot release build both clean, with `man/*` confirmed present in the
+resulting archive.
 
 ## v0.9 — Automated test suite  (was "beyond v0.6")
 - Unit tests for `internal/crypto`, `internal/fileformat`, `internal/keystore`,

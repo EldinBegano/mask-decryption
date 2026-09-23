@@ -74,8 +74,20 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:           "mlp",
-		Short:         "mlp encrypts and decrypts files with AES-256-GCM",
+		Use:   "mlp",
+		Short: "mlp encrypts and decrypts files with AES-256-GCM",
+		Long: `mlp encrypts and decrypts files with AES-256-GCM, using a single
+auto-managed keyfile — no passphrase to remember, no path to type.
+
+The first "mlp encrypt" creates a keyfile at the OS config directory (or
+$MLP_CONFIG_DIR, if set) and warns you to back it up. There is no other
+recovery mechanism: back it up now with "mlp keyfile export <path>".
+
+  mlp encrypt notes.txt      notes.txt -> notes.mlp
+  mlp decrypt notes.mlp      notes.mlp -> notes.txt
+
+Either can take a directory instead of a file, to process every file under
+it recursively. Run "mlp <command> --help" for details on any command.`,
 		Version:       version,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -91,6 +103,7 @@ func newRootCmd() *cobra.Command {
 		newRotateCmd(),
 		newKeygenCmd(),
 		newKeyfileCmd(),
+		newGendocCmd(),
 	)
 	return root
 }

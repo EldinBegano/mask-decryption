@@ -15,8 +15,15 @@ import (
 
 func newVerifyCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:           "verify <file.mlp>",
-		Short:         "Check a .mlp file's integrity without writing decrypted output",
+		Use:   "verify <file.mlp>",
+		Short: "Check a .mlp file's integrity without writing decrypted output",
+		Long: `Decrypt a .mlp file in memory just far enough to check its
+authentication tag, without ever writing decrypted output to disk.
+
+Requires the keyfile (unlike 'mlp info', which only reads the header and
+needs no key). Exits 6 if the file fails authentication — tampered,
+corrupted, or encrypted under a different key — otherwise prints "OK" and
+exits 0.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
