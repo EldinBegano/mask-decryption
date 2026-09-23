@@ -79,23 +79,25 @@ func DefaultDecryptPath(inputPath, ext string) string {
 	return RestoreExt(strings.TrimSuffix(inputPath, ".mlp"), ext)
 }
 
-// ReadMLP parses the header and returns the ciphertext that follows it.
-func ReadMLP(path string) (fileformat.Header, []byte, error) {
+// ReadMLP parses the header and returns it, its own raw encoded bytes (for
+// fileformat.Header.AAD — see there for why this matters), and the
+// ciphertext that follows it.
+func ReadMLP(path string) (hdr fileformat.Header, headerBytes, ciphertext []byte, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return fileformat.Header{}, nil, err
+		return fileformat.Header{}, nil, nil, err
 	}
 	defer f.Close()
 
-	hdr, err := fileformat.ReadHeader(f)
+	hdr, headerBytes, err = fileformat.ReadHeaderCapture(f)
 	if err != nil {
-		return hdr, nil, fmt.Errorf("%s: %w", path, err)
+		return hdr, headerBytes, nil, fmt.Errorf("%s: %w", path, err)
 	}
-	ciphertext, err := io.ReadAll(f)
+	ciphertext, err = io.ReadAll(f)
 	if err != nil {
-		return hdr, nil, err
+		return hdr, headerBytes, nil, err
 	}
-	return hdr, ciphertext, nil
+	return hdr, headerBytes, ciphertext, nil
 }
 
 // EncryptFile encrypts inputPath to outputPath ("" means DefaultEncryptPath).
@@ -148,11 +150,6 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 	}
 	res.NonceFallback = fellBack
 
-	ciphertext, err := crypto.Encrypt(key, nonce[:], packed)
-	if err != nil {
-		return res, wrap(KindOther, err)
-	}
-
 	hdr := fileformat.Header{
 		Ext:        FileExt(inputPath),
 		Nonce:      nonce,
@@ -160,8 +157,25 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		AccessTime: accessTime(info),
 		Compressed: compressed,
 	}
+	// Header bytes are computed once, here, and used both as what binds the
+	// ciphertext to this exact header (GCM additional authenticated data —
+	// see fileformat.Header.AAD) and as what actually gets written to disk.
+	// Encoding the header and encrypting are always both "the current
+	// version" going forward, so this is the header's own bytes directly,
+	// not the version-conditional Header.AAD (that's only needed on the
+	// decrypt side, which has to handle older files too).
+	headerBytes, err := fileformat.EncodeHeader(hdr)
+	if err != nil {
+		return res, wrap(KindOther, err)
+	}
+
+	ciphertext, err := crypto.Encrypt(key, nonce[:], packed, headerBytes)
+	if err != nil {
+		return res, wrap(KindOther, err)
+	}
+
 	err = writeFile(outputPath, info.Mode().Perm(), overwrite, func(w io.Writer) error {
-		if err := fileformat.WriteHeader(w, hdr); err != nil {
+		if _, err := w.Write(headerBytes); err != nil {
 			return err
 		}
 		_, err := w.Write(ciphertext)
@@ -190,7 +204,7 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		return res, wrap(KindOther, err)
 	}
 
-	hdr, ciphertext, err := ReadMLP(inputPath)
+	hdr, headerBytes, ciphertext, err := ReadMLP(inputPath)
 	if err != nil {
 		return res, wrap(KindOther, err)
 	}
@@ -200,7 +214,7 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		return res, wrap(KindNoKey, err)
 	}
 
-	plaintext, err := crypto.Decrypt(key, hdr.Nonce[:], ciphertext)
+	plaintext, err := crypto.Decrypt(key, hdr.Nonce[:], ciphertext, hdr.AAD(headerBytes))
 	if err != nil {
 		return res, wrap(KindAuth, fmt.Errorf("%s: %w", inputPath, err))
 	}

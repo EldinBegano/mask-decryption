@@ -94,17 +94,31 @@ func runRotate(args []string, yes bool) error {
 	}()
 
 	for _, t := range targets {
-		hdr, ciphertext, err := ops.ReadMLP(t.path)
+		hdr, headerBytes, ciphertext, err := ops.ReadMLP(t.path)
 		if err != nil {
 			return withCode(1, err)
 		}
-		plaintext, err := crypto.Decrypt(oldKey, hdr.Nonce[:], ciphertext)
+		plaintext, err := crypto.Decrypt(oldKey, hdr.Nonce[:], ciphertext, hdr.AAD(headerBytes))
 		if err != nil {
 			return withCode(3, fmt.Errorf("%s: %w (nothing was changed)", t.path, err))
 		}
 
 		nonce := rot.NextNonce()
-		sealed, err := crypto.Encrypt(rot.Key(), nonce[:], plaintext)
+
+		// Rotate only swaps the key: the decrypted payload (plaintext, or still
+		// zstd-compressed plaintext if hdr.Compressed) is re-encrypted exactly
+		// as-is, so the new header must carry the same Compressed flag through
+		// — dropping it would leave compressed bytes on disk with a header
+		// that says "not compressed", corrupting the next decrypt. The new
+		// header is encoded before encrypting, same as EncryptFile, so its
+		// bytes can be used as the new ciphertext's AAD (binding it to the
+		// same header this rotate is about to write) and then written as-is.
+		newHdr := fileformat.Header{Ext: hdr.Ext, Nonce: nonce, ModTime: hdr.ModTime, AccessTime: hdr.AccessTime, Compressed: hdr.Compressed}
+		newHeaderBytes, err := fileformat.EncodeHeader(newHdr)
+		if err != nil {
+			return withCode(1, fmt.Errorf("%s: %w", t.path, err))
+		}
+		sealed, err := crypto.Encrypt(rot.Key(), nonce[:], plaintext, newHeaderBytes)
 		if err != nil {
 			return withCode(1, err)
 		}
@@ -116,13 +130,7 @@ func runRotate(args []string, yes bool) error {
 		}
 		pending = append(pending, pendingRotate{tmp: tmp, dst: t.path})
 
-		// Rotate only swaps the key: the decrypted payload (plaintext, or still
-		// zstd-compressed plaintext if hdr.Compressed) is re-encrypted exactly
-		// as-is, so the new header must carry the same Compressed flag through
-		// — dropping it would leave compressed bytes on disk with a header
-		// that says "not compressed", corrupting the next decrypt.
-		newHdr := fileformat.Header{Ext: hdr.Ext, Nonce: nonce, ModTime: hdr.ModTime, AccessTime: hdr.AccessTime, Compressed: hdr.Compressed}
-		werr := fileformat.WriteHeader(f, newHdr)
+		_, werr := f.Write(newHeaderBytes)
 		if werr == nil {
 			_, werr = f.Write(sealed)
 		}

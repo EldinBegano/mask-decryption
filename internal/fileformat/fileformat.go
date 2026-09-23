@@ -25,10 +25,18 @@
 // the check existed (mlp v0.6, which predates flagCompressed, has no such
 // guard and will silently produce wrong output on a compressed file).
 //
+// The header itself is never covered by the GCM tag on its own — only
+// Header.AAD, bound in by the caller as GCM additional authenticated data,
+// makes tampering with it (without the key) detectable. A version 2 header
+// with no AAD binding would have the same silent-wrong-output problem as an
+// unrecognized flag bit, just reachable by flipping a *recognized* one
+// instead (see Header.AAD).
+//
 // Both versions decrypt; WriteHeader always writes the current version.
 package fileformat
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -77,6 +85,24 @@ type Header struct {
 // HasTimestamps reports whether h carries a stored mtime/atime.
 func (h Header) HasTimestamps() bool { return !h.ModTime.IsZero() }
 
+// AAD returns the GCM additional authenticated data to use for h's
+// ciphertext, given headerBytes — h's own encoded form, exactly as written
+// to (EncodeHeader) or read from (ReadHeaderCapture) the .mlp file.
+//
+// For a version 1 header this is nil: those files predate AAD binding and
+// were always encrypted with none, so decrypting one has to match that.
+// For a version 2 header it's headerBytes itself, which is what stops the
+// header — extension, timestamps, the compressed flag — from being changed
+// independently of the ciphertext: any edit to those bytes, by anyone
+// without the key, makes decryption fail instead of silently handing back
+// data under the wrong header.
+func (h Header) AAD(headerBytes []byte) []byte {
+	if h.Version == VersionNoTimestamps {
+		return nil
+	}
+	return headerBytes
+}
+
 // Size is the number of bytes h occupies at the start of a .mlp file, based
 // on the version and fields ReadHeader populated it with.
 func (h Header) Size() int {
@@ -91,9 +117,26 @@ func (h Header) Size() int {
 	return n
 }
 
+// EncodeHeader returns the exact bytes WriteHeader would write for h, as the
+// current version. Callers that need to bind a header to its ciphertext
+// (see Header.AAD) must encode it this way *before* encrypting, then write
+// those same bytes rather than calling WriteHeader separately — otherwise
+// the bytes authenticated and the bytes on disk could drift apart.
+func EncodeHeader(h Header) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := writeHeaderTo(&buf, h); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // WriteHeader writes h to w as the current version. Timestamps are included
 // only if h.HasTimestamps().
 func WriteHeader(w io.Writer, h Header) error {
+	return writeHeaderTo(w, h)
+}
+
+func writeHeaderTo(w io.Writer, h Header) error {
 	if len(h.Ext) > MaxExtLen {
 		return fmt.Errorf("fileformat: extension too long (%d bytes)", len(h.Ext))
 	}
@@ -134,6 +177,22 @@ func WriteHeader(w io.Writer, h Header) error {
 // ReadHeader reads a Header from r, leaving r positioned at the start of
 // the ciphertext.
 func ReadHeader(r io.Reader) (Header, error) {
+	h, _, err := ReadHeaderCapture(r)
+	return h, err
+}
+
+// ReadHeaderCapture is like ReadHeader but also returns the exact bytes
+// read for the header, which the caller must pass to Header.AAD when
+// decrypting — this is what lets decrypt notice the header was tampered
+// with independently of the ciphertext. headerBytes may be a truncated,
+// partial capture when err != nil; callers only use it on success.
+func ReadHeaderCapture(r io.Reader) (h Header, headerBytes []byte, err error) {
+	var buf bytes.Buffer
+	h, err = readHeaderFrom(io.TeeReader(r, &buf))
+	return h, buf.Bytes(), err
+}
+
+func readHeaderFrom(r io.Reader) (Header, error) {
 	var h Header
 
 	var got [4]byte

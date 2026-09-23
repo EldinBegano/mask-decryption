@@ -292,6 +292,57 @@ Known limits:
 - Compression level is zstd's default speed/ratio tradeoff
   (`SpeedDefault`); not configurable, not asked about.
 
+### Addendum: found and fixed a third, more serious bug during this work — header tampering could silently corrupt decrypted output, not just metadata
+
+Demonstrated by hand, not just reasoned about: encrypted a 180KB repetitive
+file (genuinely compressed to 148 bytes), flipped the compressed flag off in
+the header with a text editor — no key needed, header bytes were never
+covered by the GCM tag — and ran `mlp decrypt`. It printed `decrypted ->
+big_out.txt` and exited 0. The 180KB original became an 86-byte file of raw
+zstd bytes. A clean "success" over silently wrong file content, not just a
+wrong filename or timestamp, and triggerable by anyone (or anything — a sync
+conflict, bit rot on that exact bit) with only write access to the `.mlp`
+file, no key required.
+
+Root cause: extension, timestamps, and now the compressed flag were
+metadata *about* the ciphertext, but never bound to it. GCM's tag only ever
+covered the ciphertext itself.
+
+Fixed by using AES-GCM's own additional-authenticated-data (AAD) mechanism:
+`crypto.Encrypt`/`Decrypt` gained an explicit `aad []byte` parameter, and
+`fileformat.Header.AAD(headerBytes)` says what to pass — the header's own
+encoded bytes for a version `0x02` header (binding it to its ciphertext), or
+nil for a version `0x01` header (which predates this and always used nil).
+`fileformat.EncodeHeader`/`ReadHeaderCapture` were added so both sides
+compute identical bytes: the writer encodes once and uses the same bytes
+for the AAD and the on-disk write; the reader captures the exact bytes it
+parsed (via `io.TeeReader`) rather than re-serializing the parsed struct,
+avoiding any risk of the two representations drifting apart.
+
+This closes the gap for `flagCompressed`, but also, as a side effect, for
+the extension and timestamp fields — tampering with any part of a v2
+header now fails loudly (`ErrAuthFailed`) instead of silently restoring a
+wrong filename, wrong date, or (compression's case) wrong file content.
+`SPEC.md`'s file format section was wrong the moment this landed ("none of
+the header is authenticated") and has been corrected.
+
+Zero backward-compatibility cost: format version `0x02` (the one with a
+flags byte at all) was never tagged or released — only v0.1 through v0.5
+were, and those are all version `0x01`, unaffected. Verified with a
+genuinely reconstructed version-1 file (real AAD=nil ciphertext built by
+calling `crypto.Encrypt` directly, exactly as a real pre-v0.6 binary would
+have, not by truncating a v2 file) — it still decrypts correctly. Also
+verified: a real v1 file with its version byte changed to claim `0x02`
+fails to decrypt (its actual tag has no AAD binding, so pretending it does
+doesn't help an attacker either). Repeated the original bug's exact repro
+after the fix: same tampered file now fails with `ErrAuthFailed`, exit 3,
+no output file written.
+
+Rechecked after the fix: the 20-check v0.6 script (now 22, with the v1
+compat test rebuilt as above) and the 14-check v0.7 script both still pass
+in full; build + `go vet` clean on the default toolchain, the Go 1.23.0
+minimum, and cross-compiled for linux/darwin/windows.
+
 ## v0.8 — Docs  (was v0.6)
 - `README.md`: install (including `yay -S mlp`), quick start, full command
   reference, the "no recovery if keyfile is lost" warning stated up front.

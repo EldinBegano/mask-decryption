@@ -31,7 +31,7 @@ func runVerify(inputPath string) error {
 		return withCode(5, fmt.Errorf("%s is not a .mlp file", inputPath))
 	}
 
-	hdr, ciphertext, err := ops.ReadMLP(inputPath)
+	hdr, headerBytes, ciphertext, err := ops.ReadMLP(inputPath)
 	if err != nil {
 		return withCode(1, err)
 	}
@@ -41,7 +41,7 @@ func runVerify(inputPath string) error {
 		return withCode(2, err)
 	}
 
-	if _, err := crypto.Decrypt(key, hdr.Nonce[:], ciphertext); err != nil {
+	if _, err := crypto.Decrypt(key, hdr.Nonce[:], ciphertext, hdr.AAD(headerBytes)); err != nil {
 		return withCode(6, fmt.Errorf("%s: %w", inputPath, err))
 	}
 

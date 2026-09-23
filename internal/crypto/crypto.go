@@ -33,7 +33,16 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 
 // Encrypt seals plaintext under key using the given nonce. The nonce must
 // be exactly NonceSize bytes and must never be reused for the same key.
-func Encrypt(key, nonce, plaintext []byte) ([]byte, error) {
+//
+// aad (additional authenticated data) is bound to the resulting tag without
+// being encrypted: Decrypt must be given the exact same aad bytes or
+// authentication fails. Passing the .mlp header's own bytes as aad is what
+// stops the header (extension, timestamps, the compressed flag) from being
+// tampered with independently of the ciphertext — a plain nil aad only
+// protects plaintext, not the fields describing how to interpret it. nil is
+// fine when there's nothing to bind (e.g. a version 1 header, which
+// predates this).
+func Encrypt(key, nonce, plaintext, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -41,12 +50,13 @@ func Encrypt(key, nonce, plaintext []byte) ([]byte, error) {
 	if len(nonce) != gcm.NonceSize() {
 		return nil, errors.New("crypto: nonce must be 12 bytes")
 	}
-	return gcm.Seal(nil, nonce, plaintext, nil), nil
+	return gcm.Seal(nil, nonce, plaintext, aad), nil
 }
 
-// Decrypt opens ciphertext under key and nonce. Returns ErrAuthFailed if
-// authentication fails for any reason.
-func Decrypt(key, nonce, ciphertext []byte) ([]byte, error) {
+// Decrypt opens ciphertext under key, nonce and aad (see Encrypt). Returns
+// ErrAuthFailed if authentication fails for any reason, including aad not
+// matching what was passed to Encrypt.
+func Decrypt(key, nonce, ciphertext, aad []byte) ([]byte, error) {
 	gcm, err := newGCM(key)
 	if err != nil {
 		return nil, err
@@ -54,7 +64,7 @@ func Decrypt(key, nonce, ciphertext []byte) ([]byte, error) {
 	if len(nonce) != gcm.NonceSize() {
 		return nil, errors.New("crypto: nonce must be 12 bytes")
 	}
-	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, aad)
 	if err != nil {
 		return nil, ErrAuthFailed
 	}
