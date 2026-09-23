@@ -116,7 +116,8 @@ func runRotate(args []string, yes bool) error {
 		}
 		pending = append(pending, pendingRotate{tmp: tmp, dst: t.path})
 
-		werr := fileformat.WriteHeader(f, fileformat.Header{Ext: hdr.Ext, Nonce: nonce})
+		newHdr := fileformat.Header{Ext: hdr.Ext, Nonce: nonce, ModTime: hdr.ModTime, AccessTime: hdr.AccessTime}
+		werr := fileformat.WriteHeader(f, newHdr)
 		if werr == nil {
 			_, werr = f.Write(sealed)
 		}

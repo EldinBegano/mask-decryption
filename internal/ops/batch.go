@@ -32,10 +32,11 @@ type Failure struct {
 
 // BatchResult tallies a directory run.
 type BatchResult struct {
-	Done          []Result
-	Skipped       []string
-	Failed        []Failure
-	NonceFallback bool // some file used a random nonce (counter state lost)
+	Done            []Result
+	Skipped         []string
+	Failed          []Failure
+	NonceFallback   bool // some file used a random nonce (counter state lost)
+	TimestampFailed bool // some decrypted file's stored timestamp could not be applied
 }
 
 // EncryptDir encrypts every regular file under root, in place, each to its
@@ -135,6 +136,9 @@ func emitter(res *BatchResult, on func(Event)) func(Event) {
 			res.Done = append(res.Done, e.Result)
 			if e.Result.NonceFallback {
 				res.NonceFallback = true
+			}
+			if e.Result.TimestampFailed {
+				res.TimestampFailed = true
 			}
 		case EventSkipped:
 			res.Skipped = append(res.Skipped, e.Path)

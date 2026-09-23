@@ -231,6 +231,9 @@ func (u *ui) addEvent(encrypt bool, e ops.Event) {
 		if e.Result.NonceFallback {
 			u.addLine(logWarn, "Nonce counter was missing or corrupt; a random nonce was used.")
 		}
+		if e.Result.TimestampFailed {
+			u.addLine(logWarn, "Could not restore the original timestamp (file itself is fine).")
+		}
 	case ops.EventFailed:
 		u.addLine(logErr, e.Err.Error())
 	}

@@ -33,6 +33,11 @@ type Result struct {
 	OutSize       int  // bytes written to the output payload
 	Overwrote     bool // an existing output was replaced (Options.Force)
 	NonceFallback bool // encrypt used a random nonce: counter state was lost
+
+	// TimestampFailed is set on decrypt when the file was written
+	// successfully but its original mtime/atime (stored in the .mlp
+	// header) could not be applied. The file itself is not affected.
+	TimestampFailed bool
 }
 
 // FileExt returns the extension without its dot. A name that is only a
@@ -139,7 +144,12 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		return res, wrap(KindOther, err)
 	}
 
-	hdr := fileformat.Header{Ext: FileExt(inputPath), Nonce: nonce}
+	hdr := fileformat.Header{
+		Ext:        FileExt(inputPath),
+		Nonce:      nonce,
+		ModTime:    info.ModTime(),
+		AccessTime: accessTime(info),
+	}
 	err = writeFile(outputPath, info.Mode().Perm(), overwrite, func(w io.Writer) error {
 		if err := fileformat.WriteHeader(w, hdr); err != nil {
 			return err
@@ -202,6 +212,12 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 	})
 	if err != nil {
 		return res, err
+	}
+
+	if hdr.HasTimestamps() {
+		if err := os.Chtimes(outputPath, hdr.AccessTime, hdr.ModTime); err != nil {
+			res.TimestampFailed = true
+		}
 	}
 
 	res.InSize, res.OutSize = len(ciphertext), len(plaintext)

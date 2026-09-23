@@ -1,11 +1,14 @@
-# mask-decryption — Roadmap v0.2 → v0.6
+# mask-decryption — Roadmap v0.2 → v0.9
 
 Driver: v0.2–v0.3 are personal-use polish, v0.4 is the AUR release, v0.5
-finishes the remaining features (`--force`, GUI), v0.6 is docs. Automated
-tests are pushed to v0.7+ (not in this roadmap). Password-based mode is
-permanently rejected — keyfile-only stays the design.
+finishes the remaining features (`--force`, GUI), v0.6 preserves file
+timestamps, v0.7 investigates shrinking `.mlp` output (like 7z), v0.8 is
+docs, v0.9 is the automated test suite. Password-based mode is permanently
+rejected — keyfile-only stays the design.
 
-(v0.4 onward shifted by one when the AUR release was inserted as v0.4.)
+(v0.4 onward shifted by one when the AUR release was inserted as v0.4. Docs
+and tests shifted again, from v0.6/v0.7 to v0.8/v0.9, to make room for
+timestamp preservation and compression.)
 
 ## v0.2 — Batch mode + key rotation  (implemented; behavior specified in SPEC.md)
 
@@ -154,14 +157,106 @@ Known limits:
 - Wayland drag-and-drop support depends on the GLFW backend; the pickers
   always work.
 
-## v0.6 — Docs  (was v0.5)
+## v0.6 — Preserve file timestamps  (built; behavior specified in SPEC.md)
+Encrypt/decrypt previously only carried over permission bits (size grows by
+the header+tag overhead, owner was never copied, atime/mtime/ctime were not
+preserved). This adds mtime and atime.
+
+Decided:
+- Both mtime and atime, not mtime-only.
+- If restoring the timestamp on decrypt fails (odd filesystem, permission
+  quirk), warn loudly and keep the decrypted file — matches the existing
+  nonce-fallback pattern, metadata failing doesn't fail the operation.
+- `mlp info` shows the stored timestamp.
+
+Built:
+- `fileformat.Version` bumped to `0x02`: adds a flags byte (bit 0 =
+  timestamps follow), and, when set, 12-byte mtime + 12-byte atime (int64
+  unix seconds + uint32 nanoseconds) after the nonce. `ReadHeader` still
+  accepts `0x01` (no flags byte, no timestamps); `WriteHeader` always
+  writes `0x02`. A `0x02` header can still have no timestamps (flag unset)
+  — used when re-encrypting a file whose original timestamps aren't known,
+  see `mlp rotate` below, so nothing is fabricated.
+- `internal/ops`: `EncryptFile`/`EncryptDir` read `info.ModTime()` and a new
+  `accessTime(info)` helper, and write both into the header.
+  `DecryptFile`/`DecryptDir` call `os.Chtimes` after writing and `Chmod`;
+  failure sets `Result.TimestampFailed` (and `BatchResult.TimestampFailed`
+  for a batch) instead of failing the operation — the CLI and GUI both
+  print/show a warning for it, same pattern as `NonceFallback`.
+- Access time isn't exposed portably by `os.FileInfo`, so
+  `internal/ops/atime_linux.go` / `atime_darwin.go` read it from
+  `syscall.Stat_t` (field name differs: `Atim` on Linux, `Atimespec` on
+  Darwin — a real bug caught before it shipped, a blanket `//go:build unix`
+  file would have failed to compile on Darwin), `atime_windows.go` from
+  `syscall.Win32FileAttributeData`, and `atime_other.go` falls back to
+  `ModTime()` for any other OS (none is shipped).
+- `mlp rotate` (`cmd/mlp/rotate.go`) carries `hdr.ModTime`/`hdr.AccessTime`
+  from the file it read into the new header it writes, so rotating doesn't
+  reset a file's timestamp to "now" — and doesn't invent one for a v1 file
+  that never had one.
+- `mlp info` prints `modified:`/`accessed:` (RFC 3339, local time) when
+  present, else `timestamps:      (not stored)`. Also fixed a latent bug
+  it printed the package's current-write version constant instead of the
+  file's actual parsed version — harmless while only one version existed,
+  wrong the moment a second one did.
+
+Verified: a 20-check script covering plain and batch encrypt/decrypt exact
+mtime+atime roundtrip, `mlp info` timestamp display, `mlp rotate` carrying
+the stored timestamp through (not resetting it), and — the one that
+mattered most — a hand-built version-1-shaped `.mlp` (real ciphertext and
+nonce from a real encrypted file, header bytes reassembled by hand into the
+old, shorter layout) still decrypts correctly and gets a fresh timestamp,
+proving old files stay readable. Also checked: an unknown flag bit doesn't
+crash `info` or `decrypt`. Full build + `go vet` on the default toolchain,
+on the Go 1.23.0 minimum, and cross-compiled for linux/darwin/windows.
+
+Known limits:
+- Owner/group and ctime are still never touched (ctime can't be set on
+  Linux regardless).
+- The header is unauthenticated (true of the extension field since v0.1
+  too): a tampered timestamp isn't caught by `verify`.
+
+## v0.7 — Investigate shrinking `.mlp` output
+Exploratory, not a committed feature yet — "look if we can make the file a
+little smaller like 7z."
+
+Key constraint to design around: **compression must happen before
+encryption, on the plaintext.** AES-GCM ciphertext is high-entropy and
+does not compress — compressing the `.mlp` output after the fact would
+gain nothing. So this means compress-then-encrypt, decrypt-then-decompress.
+
+Open questions for when v0.7 starts:
+- Algorithm: zstd (best ratio/speed trade-off, `klauspost/compress` pure Go,
+  no CGO) vs gzip (stdlib, slower/worse ratio) vs xz/lzma (best ratio,
+  slow, CGO or a heavier pure-Go port).
+- Already-compressed input (jpg, mp4, zip, an already-encrypted file) will
+  often come out the same size or *larger* after compression, plus the
+  header overhead. Needs a "try it, keep the compressed form only if it's
+  actually smaller" rule, with a header flag recording which was used —
+  another `fileformat` version bump (`0x03`), same backward-compat
+  requirement as v0.6.
+- Whether this is default-on, a flag (`--compress`), or automatic-per-file
+  (the "try it and see" rule above, which makes an explicit flag close to
+  unnecessary).
+- Whether `mlp info` reports the compression ratio achieved.
+
+## v0.8 — Docs  (was v0.6)
 - `README.md`: install (including `yay -S mlp`), quick start, full command
   reference, the "no recovery if keyfile is lost" warning stated up front.
 - Man page: generated and shipped via goreleaser alongside release
   binaries, and installed by the AUR packages.
 
-## Beyond v0.6 (explicitly not in this roadmap)
-- v0.7: automated test suite (unit + fuzz on `.mlp` header parsing).
+## v0.9 — Automated test suite  (was "beyond v0.6")
+- Unit tests for `internal/crypto`, `internal/fileformat`, `internal/keystore`,
+  `internal/ops`.
+- Fuzz testing on `.mlp` header parsing (now more important: two format
+  versions and a compression flag to fuzz by v0.9).
+- Wire into CI (`go test ./...`, alongside the existing `go build`/`go vet`).
+
+## Beyond v0.9 (explicitly not in this roadmap)
 - Streaming/chunked AEAD for very large files — unscheduled.
 - Password-based mode — rejected permanently, not revisited.
-- no Homebrew
+- Homebrew — investigated after v0.4 and dropped (repo doesn't meet
+  homebrew-core's popularity bar; a personal tap means either a
+  hand-written source formula or a cask needing a notarized binary or an
+  `xattr` Gatekeeper-bypass hack). AUR is the only distro channel.

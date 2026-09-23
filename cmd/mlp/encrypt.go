@@ -77,6 +77,9 @@ func reportDone(verb string, r ops.Result, showInSize bool) {
 	if r.NonceFallback {
 		warnNonceFallback()
 	}
+	if r.TimestampFailed {
+		fmt.Fprintf(os.Stderr, "WARNING: %s: could not restore the original timestamp (file itself is fine)\n", r.Output)
+	}
 }
 
 func runEncrypt(inputPath, outputPath string, force bool) error {

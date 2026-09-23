@@ -38,15 +38,31 @@ Decrypt: `file.mlp` → `file.txt`
 - Config dir override: `MLP_CONFIG_DIR` env var, if set, overrides `os.UserConfigDir()` default (portable/USB use, testing).
 
 ## File format (`.mlp`)
-Binary header + ciphertext:
+Binary header + ciphertext. Two versions exist; `ReadHeader` accepts both, `WriteHeader` always writes the current one (`0x02`).
+
+**Version `0x01`** (files from v0.1–v0.5):
 
 | Field | Size | Notes |
 |---|---|---|
 | Magic | 4 bytes | `"MLP1"` |
-| Version | 1 byte | format version, `0x01` |
+| Version | 1 byte | `0x01` |
 | Original extension | length-prefixed (1 byte len + UTF-8 bytes) | e.g. `"txt"`, restores extension on decrypt |
 | Nonce | 12 bytes | GCM nonce, counter-derived (or random fallback if counter state was lost) |
 | Ciphertext+Tag | remainder | AES-256-GCM output (tag appended) |
+
+**Version `0x02`** (current, v0.6+): adds a flags byte and, when its `flagTimestamps` bit is set, the source file's mtime and atime.
+
+| Field | Size | Notes |
+|---|---|---|
+| Magic | 4 bytes | `"MLP1"` |
+| Version | 1 byte | `0x02` |
+| Flags | 1 byte | bit 0 = timestamps follow after the nonce |
+| Original extension | length-prefixed (1 byte len + UTF-8 bytes) | e.g. `"txt"`, restores extension on decrypt |
+| Nonce | 12 bytes | GCM nonce, counter-derived (or random fallback if counter state was lost) |
+| ModTime, AccessTime | 12 bytes each (int64 unix seconds + uint32 nanoseconds), only if the timestamps flag is set | omitted when re-encrypting a v1 file whose original timestamps were never known (e.g. `mlp rotate`) — never fabricated |
+| Ciphertext+Tag | remainder | AES-256-GCM output (tag appended) |
+
+None of the header (extension, nonce, timestamps) is authenticated by GCM — only the ciphertext is. A tampered extension or timestamp isn't detected by `verify`; this was already true of the extension field before v0.6.
 
 - Decrypt reads header, restores original extension automatically — user doesn't retype it.
 
@@ -67,6 +83,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 - If output filename already exists: abort, don't overwrite, print error (no silent clobber). `-f/--force` replaces it instead (v0.5, below).
 - Default output: one-line confirmation printed on success (e.g. `encrypted -> file.mlp`). `-v/--verbose` adds step/timing detail. No progress bar (whole-file crypto is fast enough not to need one).
 - Output file preserves original file's permission mode bits.
+- Encrypt stores the source file's mtime and atime in the header (v0.6+); decrypt restores them via `os.Chtimes` after writing. If that fails (odd filesystem, permission quirk), the decrypted file is kept and a warning is printed — metadata failing doesn't fail the operation. A `.mlp` with no stored timestamp (v1-format, or a v2 file rotated from one) decrypts with a fresh timestamp, same as before v0.6. Owner/group and ctime are never touched (see "what changes on encrypt" — size grows by the header+tag overhead, owner is never copied, ctime can't be set on Linux regardless).
 - Symlink input: followed (operates on link target), standard CLI behavior.
 
 ### `--force` / `-f` (v0.5)
@@ -90,8 +107,8 @@ mlp keyfile import <path>          # restore keyfile from given path
 - `.mlp` files not included stay on the old key and no longer decrypt with the active one; `keyfile.old` keeps them recoverable. User deletes `keyfile.old` when done.
 - A crash between key activation and the file renames is the one non-atomic window; recovery is via `keyfile.old` and any leftover `.rotate-tmp` files (a leftover blocks the next rotate until inspected).
 
-### `mlp info <file.mlp>` (v0.3)
-- Reads only the header: format version, original extension (`(none)` if empty), the filename `decrypt` would produce, and plaintext size (file size minus header minus the 16-byte GCM tag).
+### `mlp info <file.mlp>` (v0.3, timestamps added v0.6)
+- Reads only the header: format version (the file's actual version, `1` or `2` — not the tool's current write version), original extension (`(none)` if empty), the filename `decrypt` would produce, plaintext size (file size minus header minus the 16-byte GCM tag), and, if stored, the mtime/atime in local time (RFC 3339). A file with no stored timestamps (v1, or rotated from one) prints `timestamps:      (not stored)` instead.
 - Never touches the keystore, so it works with no keyfile, and creates nothing. It cannot detect tampering (ciphertext isn't authenticated without the key) — `mlp verify` does that.
 - Exit 5 if the name doesn't end in `.mlp`; exit 1 for bad magic, unsupported version, truncated header, or a file too short to hold the auth tag.
 
@@ -150,18 +167,19 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 /cmd/mlp             - CLI entrypoint (cobra), builds the `mlp` binary; thin wrapper over internal/ops
 /cmd/mlp-gui         - Fyne desktop app, builds the `mlp-gui` binary (CGO); assets/ holds the icon and .desktop file
 /internal/ops        - file-level encrypt/decrypt, batch walk, atomic writes; never prints or exits (shared by CLI and GUI)
+                        atime_{linux,darwin,windows,other}.go - per-OS access-time extraction (os.FileInfo doesn't expose it portably)
 /internal/crypto     - AES-256-GCM encrypt/decrypt core
 /internal/keystore   - keyfile + counter create/load/locate/export/import
 /internal/fileformat - .mlp header read/write
 ```
 
 ## Backlog (post-v0.1, not open questions — deliberately deferred)
-Scheduled into versions — see [ROADMAP.md](ROADMAP.md) for v0.2–v0.6 (batch
-mode, key rotation, `mlp info`, AUR release, `--force` + GUI (done), docs).
+Scheduled into versions — see [ROADMAP.md](ROADMAP.md) for v0.2–v0.9 (batch
+mode, key rotation, `mlp info`, AUR release, `--force` + GUI (done),
+timestamp preservation, output-size investigation, docs, tests).
 
 Unscheduled:
 - Streaming/chunked AEAD for very large files
-- Automated test suite (unit + fuzz) — v0.7+
 - Password-based mode — rejected permanently, not revisited
 
 ## Open questions
