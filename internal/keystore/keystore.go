@@ -20,10 +20,11 @@ const (
 	KeySize   = 32 // AES-256
 	NonceSize = 12
 
-	dirName        = "mask-decryption"
-	keyFileName    = "keyfile"
-	counterName    = "counter"
-	oldKeyFileName = "keyfile.old"
+	dirName            = "mask-decryption"
+	keyFileName        = "keyfile"
+	counterName        = "counter"
+	oldKeyFileName     = "keyfile.old"
+	oldCounterFileName = "counter.old"
 )
 
 // ErrKeyfileMissing is returned by LoadKey when no keyfile exists yet.
@@ -109,9 +110,11 @@ func LoadOrCreateKey() (key []byte, created bool, err error) {
 	return key, true, nil
 }
 
-// Keygen creates a new random key and resets the nonce counter to zero,
-// overwriting any existing key. Data encrypted under the old key becomes
-// permanently unreadable.
+// Keygen creates a new random key, overwriting any existing one. Data
+// encrypted under the old key can no longer be decrypted with the new one
+// active — but the old key itself is preserved as keyfile.old (see
+// OldKeyPath) first, so that outcome is recoverable by hand, not permanent.
+// This mirrors the safety net Rotation.Commit gives mlp rotate.
 func Keygen() ([]byte, error) {
 	dir, err := ConfigDir()
 	if err != nil {
@@ -121,28 +124,53 @@ func Keygen() ([]byte, error) {
 		return nil, err
 	}
 
-	key := make([]byte, KeySize)
-	if _, err := rand.Read(key); err != nil {
+	kp, err := keyPath()
+	if err != nil {
+		return nil, err
+	}
+	if err := backupIfExists(kp, filepath.Join(dir, oldKeyFileName)); err != nil {
 		return nil, err
 	}
 
-	kp, err := keyPath()
-	if err != nil {
+	key := make([]byte, KeySize)
+	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
 	if err := writeFileFsync(kp, key, 0o600); err != nil {
 		return nil, err
 	}
 
+	// The counter is a never-lowered high-water-mark across every key this
+	// config dir has ever had (see Rotation.Commit), not reset here: if
+	// keyfile.old is ever manually restored, resuming encryption under it
+	// then can never reuse a nonce it already used before this Keygen call.
+	// A missing/corrupt counter (including a genuinely first-ever key)
+	// starts fresh at 0, same as before this safety net existed.
 	cp, err := counterPath()
 	if err != nil {
 		return nil, err
 	}
-	if err := writeCounter(cp, 0); err != nil {
-		return nil, err
+	if _, err := readCounter(cp); err != nil {
+		if err := writeCounter(cp, 0); err != nil {
+			return nil, err
+		}
 	}
 
 	return key, nil
+}
+
+// backupIfExists copies src to dst if src exists, leaving dst untouched if
+// src doesn't. Used to preserve whatever key/counter is about to be
+// replaced.
+func backupIfExists(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return writeFileAtomic(dst, data, 0o600)
 }
 
 // NextNonce returns the next nonce to use for encryption. The counter is
@@ -233,8 +261,12 @@ func Export(destDir string) error {
 }
 
 // Import installs a keyfile+counter backup from srcDir into the config
-// dir, overwriting whatever is there. Callers should confirm with the
-// user first when a keyfile already exists.
+// dir, overwriting whatever is there. Whatever key was previously active is
+// preserved first as keyfile.old (with its own counter as counter.old, so
+// the two can be restored together as a matched, safe-to-resume pair) —
+// importing the wrong backup by mistake is then recoverable, not permanent.
+// Callers should still confirm with the user first when a keyfile already
+// exists.
 func Import(srcDir string) error {
 	dir, err := ConfigDir()
 	if err != nil {
@@ -250,6 +282,12 @@ func Import(srcDir string) error {
 	}
 	cp, err := counterPath()
 	if err != nil {
+		return err
+	}
+	if err := backupIfExists(kp, filepath.Join(dir, oldKeyFileName)); err != nil {
+		return err
+	}
+	if err := backupIfExists(cp, filepath.Join(dir, oldCounterFileName)); err != nil {
 		return err
 	}
 	if err := copyFile(filepath.Join(srcDir, keyFileName), kp); err != nil {
@@ -361,13 +399,23 @@ func (r *Rotation) Commit() error {
 	return writeFileAtomic(kp, r.key, 0o600)
 }
 
-// OldKeyPath is where Commit keeps the previous key.
+// OldKeyPath is where Commit, Keygen and Import keep the previous key.
 func OldKeyPath() (string, error) {
 	dir, err := ConfigDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, oldKeyFileName), nil
+}
+
+// OldCounterPath is where Import keeps the previous counter, matched to
+// the key at OldKeyPath so the two can be restored together safely.
+func OldCounterPath() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, oldCounterFileName), nil
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {

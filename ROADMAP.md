@@ -343,6 +343,86 @@ compat test rebuilt as above) and the 14-check v0.7 script both still pass
 in full; build + `go vet` clean on the default toolchain, the Go 1.23.0
 minimum, and cross-compiled for linux/darwin/windows.
 
+### Addendum 2: full code review turned up two more issues, both fixed
+
+Prompted by "look for more bugs," a fresh read of every package (not just
+the AAD area) surfaced three findings; two were fixed, one (below) wasn't
+asked for and is left as a documented gap.
+
+**Fixed — `mlp keygen` and `mlp keyfile import` destroyed the active key
+with no way back.** Demonstrated directly: `mlp keygen -y` (or `import`
+pointed at the wrong path) overwrote the keyfile in place with nothing
+preserved — `mlp rotate` was the only one of the three key-replacing
+operations that kept a `keyfile.old` safety net. One mistake was
+permanent, unrecoverable data loss, for an encryption tool, with the fix
+already proven elsewhere in the same codebase.
+
+Fixed by applying `Rotation.Commit`'s pattern to both: `keystore.Keygen`
+and `keystore.Import` now back up whatever key is currently active (via a
+new shared `backupIfExists` helper, same `writeFileAtomic` underneath) to
+`keyfile.old` before replacing it. Single slot, most-recent-previous only
+— not a history, matching `rotate`'s existing model. Nothing is backed up
+on a genuinely first-ever key (nothing to preserve).
+
+- `Keygen` no longer resets the counter to 0 either: like `rotate`, it's a
+  never-lowered high-water-mark across every key this config dir has ever
+  had, so if `keyfile.old` is restored by hand later, resuming under it
+  can't reuse a nonce it already used. A first-ever key still starts the
+  counter at 0 (readCounter fails, same fallback as before).
+- `Import` backs up the key **and its matched counter** together
+  (`keyfile.old` + a new `counter.old`) — it fully replaces the counter
+  too (unlike `Keygen`), so only the key alone wouldn't have been safe to
+  resume from.
+- New `keystore.OldCounterPath`, alongside the existing `OldKeyPath`.
+- CLI (`mlp keygen`, `mlp keyfile import`) and GUI (Keyfile > Import
+  backup) both updated: confirmation prompts no longer say
+  "permanently unreadable" (no longer true), success output/dialogs say
+  where the backup landed, matching what `mlp rotate` already prints.
+
+**Fixed — `DecryptFile` checked "does the output already exist" only
+*after* paying for the full key fetch, decrypt and decompress; `EncryptFile`
+checked first.** Demonstrated directly: no keyfile present *and* the
+output already existed → reported "keyfile not found" (exit 2), hiding
+that the output conflict (exit 4) was the real, separate blocker, only
+discovered on a wasted retry once a keyfile existed. Not data-loss
+(`decrypt` only ever calls `LoadKey`, never auto-creates), but a genuine,
+reproducible wrong-priority error.
+
+Fixed by moving the output-path computation and `checkOutput` call to
+right after the header parses (all it needs is `hdr.Ext`) and before
+`getKey`/decrypt/decompress — mirrors `EncryptFile`'s existing "cheap
+validation before expensive/key-dependent work" order, and matches the
+`KeyFunc` doc comment's stated intent, which `DecryptFile` alone didn't
+follow.
+
+**Not fixed, left as a documented gap — `Rotation.Commit` silently treats
+a corrupted/missing nonce counter as 0, with no warning.** Same corrupted
+counter file, two code paths: a normal `encrypt` (`NextNonce`) prints
+`WARNING: nonce counter state was missing or corrupt — using random
+nonces instead.`; `rotate`'s `Commit` (identical failure) says nothing at
+all and just resets the counter. Verified directly — same file,
+side-by-side. Low practical severity: turning this into an actual nonce
+reuse needs corruption *and* a rotate *and* someone later manually
+restoring `keyfile.old`, a narrow multi-step chain — but it's a real
+inconsistency between two code paths that otherwise handle the identical
+failure the same way everywhere else. Not asked for in this pass.
+
+Verified: a new 21-check script covers both fixes — `keyfile.old` created
+and byte-correct after `keygen`, unreadable under the new key, readable
+again once restored by hand; a second `keygen` backs up the *second*
+generation, not the first (proving single-slot, not history); counter
+never lowered by `keygen`, but still starts at 0 on a genuinely first-ever
+key; `keyfile import` produces a matched `keyfile.old`+`counter.old` pair
+that together (not the key alone) restore a working state; neither
+operation falsely claims a backup when there was nothing to back up; the
+error-priority fix reproduces the exact scenario above now returning exit
+4, not 2, while a decrypt with no *output* conflict still correctly
+reports exit 2 when the keyfile really is the only problem; normal decrypt
+and `--force` decrypt both still work under the new ordering. Full rebuild
+of all prior regression scripts (44+31+22+14 checks) still passes; build +
+`go vet` clean on the default toolchain, the Go 1.23.0 minimum, and
+cross-compiled for linux/darwin/windows.
+
 ## v0.8 — Docs  (was v0.6)
 - `README.md`: install (including `yay -S mlp`), quick start, full command
   reference, the "no recovery if keyfile is lost" warning stated up front.

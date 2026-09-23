@@ -476,17 +476,26 @@ func (u *ui) importKey() {
 		if l == nil {
 			return
 		}
+		hadOldKey, _ := keystore.Exists()
 		doImport := func() {
 			if err := keystore.Import(l.Path()); err != nil {
 				dialog.ShowError(err, u.win)
 				return
 			}
-			dialog.ShowInformation("Keyfile imported", "The backup was restored.", u.win)
+			msg := "The backup was restored."
+			if hadOldKey {
+				if oldPath, err := keystore.OldKeyPath(); err == nil {
+					msg += "\n\nThe key that was active before is kept at:\n" + oldPath +
+						"\n\nDelete it once you no longer need it."
+				}
+			}
+			dialog.ShowInformation("Keyfile imported", msg, u.win)
 		}
-		if exists, _ := keystore.Exists(); exists {
+		if hadOldKey {
 			dialog.NewConfirm("Replace current keyfile?",
-				"A keyfile already exists. Importing replaces it and its nonce counter. "+
-					"Files encrypted with the current key can no longer be decrypted unless you have a backup of it.",
+				"A keyfile already exists. Importing replaces it and its nonce counter — files encrypted "+
+					"with the current key can no longer be decrypted unless you restore it (it's kept as "+
+					"keyfile.old, with counter.old, if you picked the wrong backup by mistake).",
 				func(yes bool) {
 					if yes {
 						doImport()

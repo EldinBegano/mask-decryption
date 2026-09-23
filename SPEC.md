@@ -29,12 +29,15 @@ Decrypt: `file.mlp` → `file.txt`
 - Location: OS config dir via `os.UserConfigDir()` → `<config>/mask-decryption/keyfile`
   (Linux: `~/.config/mask-decryption/keyfile`)
 - Permissions: `0600` on creation.
-- Rotation keeps the previous key as `<config>/mask-decryption/keyfile.old` (see `mlp rotate`).
-- Auto-created on first `encrypt` if missing (no explicit `keygen` step required, but `mlp keygen` also exposed for manual regen — regen resets counter too).
+- Auto-created on first `encrypt` if missing (no explicit `keygen` step required, but `mlp keygen` also exposed for manual regen).
 - Program locates keyfile automatically — no path input from user in normal operation.
-- **No recovery mechanism.** Lost/deleted keyfile = permanently unrecoverable data. On first key creation, CLI prints a one-time loud warning telling user to back up the keyfile.
+- **No recovery mechanism for the *active* key.** Lost/deleted keyfile (and its `keyfile.old`, if any) = permanently unrecoverable data. On first key creation, CLI prints a one-time loud warning telling user to back up the keyfile.
+- **Every operation that replaces the active key preserves the previous one as `keyfile.old`** — `mlp rotate` (the original case), `mlp keygen`, and `mlp keyfile import` all go through this same safety net, so one mistake (a `keygen` run by accident, or `keyfile import` pointed at the wrong path) is recoverable by hand rather than permanent. Single slot: each replacement overwrites whatever was there, it's "the previous key," not a history. Nothing is backed up when there was no existing key to replace (a genuinely first-ever `keygen`).
+  - `mlp keygen`: backs up the key only (`keyfile.old`). The counter is **not** reset to 0 — like `mlp rotate`, it's a never-lowered high-water-mark across every key this config dir has ever had, so if `keyfile.old` is later restored by hand, resuming under it can't reuse a nonce it already used. A first-ever `keygen` (nothing to preserve) still starts the counter at 0.
+  - `mlp keyfile import`: backs up the key **and its matched counter** together, as `keyfile.old` + `counter.old` — restoring that pair (not just the key alone) is what keeps resuming the old key nonce-safe, since `import` fully replaces the counter too (unlike `keygen`).
+  - Both print where the backup landed (`previous key kept at <path> — delete it once you no longer need it`), same as `mlp rotate` already does.
 - `mlp keyfile export <path>` — copies keyfile **and counter state** out (e.g. to USB) for backup, bundled together so a restore continues the counter correctly (avoids nonce reuse). Prints SHA-256 of the exported keyfile to terminal for manual verification.
-- `mlp keyfile import <path>` — installs keyfile + counter from backup into the config dir (confirms before overwriting an existing one).
+- `mlp keyfile import <path>` — installs keyfile + counter from backup into the config dir (confirms before overwriting an existing one; see the `keyfile.old`/`counter.old` backup above).
 - Config dir override: `MLP_CONFIG_DIR` env var, if set, overrides `os.UserConfigDir()` default (portable/USB use, testing).
 
 ## File format (`.mlp`)
@@ -84,7 +87,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 - Built with cobra.
 - `-o/--output` lets user redirect output location/filename; default is fixed naming next to input.
 - Both original and output file are kept (no auto-delete).
-- If output filename already exists: abort, don't overwrite, print error (no silent clobber). `-f/--force` replaces it instead (v0.5, below).
+- If output filename already exists: abort, don't overwrite, print error (no silent clobber). `-f/--force` replaces it instead (v0.5, below). Checked as early as possible — right after the output path is known (which for decrypt only needs the header's stored extension, not the key) and before any key fetch or decryption — so this cheap, local check reports first if it's the real blocker rather than being masked by a `getKey()` failure that would otherwise be hit first.
 - Default output: one-line confirmation printed on success (e.g. `encrypted -> file.mlp`). `-v/--verbose` adds step/timing detail. No progress bar (whole-file crypto is fast enough not to need one).
 - Output file preserves original file's permission mode bits.
 - Encrypt stores the source file's mtime and atime in the header (v0.6+); decrypt restores them via `os.Chtimes` after writing. If that fails (odd filesystem, permission quirk), the decrypted file is kept and a warning is printed — metadata failing doesn't fail the operation. A `.mlp` with no stored timestamp (v1-format, or a v2 file rotated from one) decrypts with a fresh timestamp, same as before v0.6. Owner/group and ctime are never touched (see "what changes on encrypt" — size grows by the header+tag overhead, owner is never copied, ctime can't be set on Linux regardless).

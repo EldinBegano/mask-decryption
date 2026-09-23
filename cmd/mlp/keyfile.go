@@ -76,16 +76,22 @@ func runKeyfileImport(src string, yes bool) error {
 		return withCode(1, err)
 	}
 	if exists && !yes {
-		ok := confirm("A keyfile already exists. Importing replaces it and its nonce counter. Continue?")
+		ok := confirm("A keyfile already exists. Importing replaces it and its nonce counter — files encrypted with the current key can no longer be decrypted unless you restore it (it's kept as keyfile.old, with counter.old, if you pointed this at the wrong backup by mistake). Continue?")
 		if !ok {
 			fmt.Println("aborted")
 			return nil
 		}
 	}
+
+	hadOldKey := exists
 	if err := keystore.Import(src); err != nil {
 		return withCode(1, err)
 	}
 	fmt.Println("keyfile imported")
+	if hadOldKey {
+		oldPath, _ := keystore.OldKeyPath()
+		fmt.Printf("previous key kept at %s — delete it once you no longer need it\n", oldPath)
+	}
 	return nil
 }
 

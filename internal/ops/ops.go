@@ -190,7 +190,10 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 }
 
 // DecryptFile decrypts the .mlp file at inputPath to outputPath ("" means the
-// original name). The key is fetched after the header parses, so a malformed
+// original name). Output-exists is checked right after the header parses —
+// before fetching the key or doing any decryption work — same as
+// EncryptFile: cheap, local validation first, expensive/key-dependent work
+// only once it's worth doing. The key is fetched after that, so a malformed
 // file reports as malformed rather than as a missing keyfile.
 func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Result, error) {
 	res := Result{Input: inputPath}
@@ -209,6 +212,17 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		return res, wrap(KindOther, err)
 	}
 
+	if outputPath == "" {
+		outputPath = DefaultDecryptPath(inputPath, hdr.Ext)
+	}
+	res.Output = outputPath
+
+	overwrite, err := checkOutput(info, outputPath, opts.Force)
+	if err != nil {
+		return res, err
+	}
+	res.Overwrote = overwrite
+
 	key, err := getKey()
 	if err != nil {
 		return res, wrap(KindNoKey, err)
@@ -224,17 +238,6 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 			return res, wrap(KindOther, fmt.Errorf("%s: %w", inputPath, err))
 		}
 	}
-
-	if outputPath == "" {
-		outputPath = DefaultDecryptPath(inputPath, hdr.Ext)
-	}
-	res.Output = outputPath
-
-	overwrite, err := checkOutput(info, outputPath, opts.Force)
-	if err != nil {
-		return res, err
-	}
-	res.Overwrote = overwrite
 
 	err = writeFile(outputPath, info.Mode().Perm(), overwrite, func(w io.Writer) error {
 		_, err := w.Write(plaintext)
