@@ -368,35 +368,42 @@ func (r *Rotation) NextNonce() [NonceSize]byte {
 // The counter is written first, and never lowered: whichever of the two
 // writes a crash interrupts, the surviving key still has a counter at or
 // above every nonce already used under it.
-func (r *Rotation) Commit() error {
+//
+// If the counter state is missing or corrupt, Commit can't know how high
+// the old key's true usage was, so it can only make the counter safe for
+// the new key (which is all it needs to be) — not for resuming the old
+// key later from keyfile.old. fellBack reports this so the caller can warn
+// loudly, same as NextNonce's identical fallback does.
+func (r *Rotation) Commit() (fellBack bool, err error) {
 	old, err := LoadKey()
 	if err != nil {
-		return err
+		return false, err
 	}
 	dir, err := ConfigDir()
 	if err != nil {
-		return err
+		return false, err
 	}
 	kp, err := keyPath()
 	if err != nil {
-		return err
+		return false, err
 	}
 	cp, err := counterPath()
 	if err != nil {
-		return err
+		return false, err
 	}
 
-	cur, err := readCounter(cp)
-	if err != nil {
+	cur, cerr := readCounter(cp)
+	if cerr != nil {
 		cur = 0
+		fellBack = true
 	}
 	if err := writeCounter(cp, max(cur, r.used)); err != nil {
-		return err
+		return fellBack, err
 	}
 	if err := writeFileAtomic(filepath.Join(dir, oldKeyFileName), old, 0o600); err != nil {
-		return err
+		return fellBack, err
 	}
-	return writeFileAtomic(kp, r.key, 0o600)
+	return fellBack, writeFileAtomic(kp, r.key, 0o600)
 }
 
 // OldKeyPath is where Commit, Keygen and Import keep the previous key.

@@ -110,7 +110,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 ### `mlp rotate <file.mlp|dir>...` (v0.2)
 - Targets: `.mlp` files and/or directories (all `.mlp` inside). Symlinks resolved (the real file is replaced), duplicates collapsed. Prompts for confirmation unless `-y`.
 - All-or-nothing: every target is decrypted with the current key and re-encrypted under an in-memory new key into a `.<name>.rotate-tmp` file beside it. Any failure (exit 3 on auth failure) deletes the temps and leaves the key and every file untouched.
-- Only after all succeed: counter written (`max(old, used)`, never lowered), old key saved as `keyfile.old` (0600), new key activated, temps renamed over originals.
+- Only after all succeed: counter written (`max(old, used)`, never lowered), old key saved as `keyfile.old` (0600), new key activated, temps renamed over originals. If the counter state was missing or corrupt at that point, it can't know the old key's true prior usage — it's treated as 0 for this write (so `max` doesn't protect it as normal), and a loud warning explains that a later manual restore of `keyfile.old` is safe to decrypt with but not to encrypt new files under (same fallback `mlp encrypt` already warns about via `NextNonce`, applied consistently here too).
 - `.mlp` files not included stay on the old key and no longer decrypt with the active one; `keyfile.old` keeps them recoverable. User deletes `keyfile.old` when done.
 - A crash between key activation and the file renames is the one non-atomic window; recovery is via `keyfile.old` and any leftover `.rotate-tmp` files (a leftover blocks the next rotate until inspected).
 

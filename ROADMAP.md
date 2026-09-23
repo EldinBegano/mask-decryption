@@ -395,32 +395,43 @@ validation before expensive/key-dependent work" order, and matches the
 `KeyFunc` doc comment's stated intent, which `DecryptFile` alone didn't
 follow.
 
-**Not fixed, left as a documented gap — `Rotation.Commit` silently treats
-a corrupted/missing nonce counter as 0, with no warning.** Same corrupted
-counter file, two code paths: a normal `encrypt` (`NextNonce`) prints
-`WARNING: nonce counter state was missing or corrupt — using random
-nonces instead.`; `rotate`'s `Commit` (identical failure) says nothing at
-all and just resets the counter. Verified directly — same file,
-side-by-side. Low practical severity: turning this into an actual nonce
-reuse needs corruption *and* a rotate *and* someone later manually
-restoring `keyfile.old`, a narrow multi-step chain — but it's a real
-inconsistency between two code paths that otherwise handle the identical
-failure the same way everywhere else. Not asked for in this pass.
+**Fixed — `Rotation.Commit` silently treated a corrupted/missing nonce
+counter as 0, with no warning.** Same corrupted counter file, two code
+paths: a normal `encrypt` (`NextNonce`) printed `WARNING: nonce counter
+state was missing or corrupt — using random nonces instead.`; `rotate`'s
+`Commit` (identical failure) said nothing at all and just reset the
+counter. Verified directly — same file, side-by-side. Low practical
+severity on its own: turning this into an actual nonce reuse needs
+corruption *and* a rotate *and* someone later manually restoring
+`keyfile.old`, a narrow multi-step chain — but a real inconsistency
+between two code paths that otherwise handle the identical failure the
+same way everywhere else.
 
-Verified: a new 21-check script covers both fixes — `keyfile.old` created
-and byte-correct after `keygen`, unreadable under the new key, readable
-again once restored by hand; a second `keygen` backs up the *second*
-generation, not the first (proving single-slot, not history); counter
-never lowered by `keygen`, but still starts at 0 on a genuinely first-ever
-key; `keyfile import` produces a matched `keyfile.old`+`counter.old` pair
-that together (not the key alone) restore a working state; neither
-operation falsely claims a backup when there was nothing to back up; the
-error-priority fix reproduces the exact scenario above now returning exit
-4, not 2, while a decrypt with no *output* conflict still correctly
-reports exit 2 when the keyfile really is the only problem; normal decrypt
-and `--force` decrypt both still work under the new ordering. Full rebuild
-of all prior regression scripts (44+31+22+14 checks) still passes; build +
-`go vet` clean on the default toolchain, the Go 1.23.0 minimum, and
+Fixed by giving `Commit` the same `fellBack` signal `NextNonce` already
+returns: it now reports whether the counter had to be treated as 0, and
+`cmd/mlp/rotate.go` prints a loud warning when that happens, explaining
+the actual risk precisely — decrypting with a later-restored `keyfile.old`
+is still safe (decryption doesn't consume nonces), but encrypting *new*
+files under it isn't, since its usage before this rotation is no longer
+tracked. Verified both directions directly: a healthy counter prints no
+warning at all; a corrupted one warns with the guidance above, and the
+rotated file still decrypts correctly either way.
+
+Verified: a new 21-check script covers the keygen/import fixes above —
+`keyfile.old` created and byte-correct after `keygen`, unreadable under
+the new key, readable again once restored by hand; a second `keygen`
+backs up the *second* generation, not the first (proving single-slot, not
+history); counter never lowered by `keygen`, but still starts at 0 on a
+genuinely first-ever key; `keyfile import` produces a matched
+`keyfile.old`+`counter.old` pair that together (not the key alone) restore
+a working state; neither operation falsely claims a backup when there was
+nothing to back up; the error-priority fix reproduces the exact scenario
+above now returning exit 4, not 2, while a decrypt with no *output*
+conflict still correctly reports exit 2 when the keyfile really is the
+only problem; normal decrypt and `--force` decrypt both still work under
+the new ordering. Full rebuild of all prior regression scripts
+(44+31+22+14 checks, plus the `Commit` warning checks) still passes; build
++ `go vet` clean on the default toolchain, the Go 1.23.0 minimum, and
 cross-compiled for linux/darwin/windows.
 
 ## v0.8 — Docs  (was v0.6)

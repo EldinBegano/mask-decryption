@@ -149,10 +149,16 @@ func runRotate(args []string, yes bool) error {
 	}
 
 	// Phase 2: commit the new key, then swap the files in.
-	if err := rot.Commit(); err != nil {
+	counterFellBack, err := rot.Commit()
+	if err != nil {
 		return withCode(1, fmt.Errorf("could not activate the new key: %w (nothing was changed)", err))
 	}
 	committed = true
+	if counterFellBack {
+		fmt.Fprintln(os.Stderr, "WARNING: nonce counter state was missing or corrupt — it now reflects only this rotation.")
+		fmt.Fprintln(os.Stderr, "         If you restore keyfile.old later, it's safe to decrypt with it, but do not encrypt")
+		fmt.Fprintln(os.Stderr, "         new files under it: its nonce usage before this rotation is no longer tracked.")
+	}
 
 	var stuck []pendingRotate
 	replaced := 0
