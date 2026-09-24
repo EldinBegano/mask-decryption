@@ -53,13 +53,13 @@ Binary header + ciphertext. Two versions exist; `ReadHeader` accepts both, `Writ
 | Nonce | 12 bytes | GCM nonce, counter-derived (or random fallback if counter state was lost) |
 | Ciphertext+Tag | remainder | AES-256-GCM output (tag appended) |
 
-**Version `0x02`** (current, v0.6+): adds a flags byte. Bit 0 (`flagTimestamps`, v0.6) says the mtime/atime fields follow; bit 1 (`flagCompressed`, v0.7) says the plaintext was zstd-compressed before encryption. Both share this one version — adding compression didn't need another bump, since the byte layout it needs (a flags byte that can gain more bits) already existed.
+**Version `0x02`** (current, v0.6+): adds a flags byte. Bit 0 (`flagTimestamps`, v0.6) says the mtime/atime fields follow; bit 1 (`flagCompressed`, v0.7) says the plaintext was zstd-compressed before encryption; bit 2 (`flagBrotli`, v0.8) says it was brotli-compressed instead (never both). All share this one version — adding compression didn't need another bump, since the byte layout it needs (a flags byte that can gain more bits) already existed.
 
 | Field | Size | Notes |
 |---|---|---|
 | Magic | 4 bytes | `"MLP1"` |
 | Version | 1 byte | `0x02` |
-| Flags | 1 byte | bit 0 = timestamps follow after the nonce; bit 1 = plaintext was compressed. Any other bit set → `ErrUnknownFlag`, not silently ignored (see below) |
+| Flags | 1 byte | bit 0 = timestamps follow after the nonce; bit 1 = plaintext is zstd-compressed; bit 2 = plaintext is brotli-compressed (v0.8). Bits 1 and 2 together → `ErrBadFlags`; any other bit set → `ErrUnknownFlag`. Neither is silently ignored (see below) |
 | Original extension | length-prefixed (1 byte len + UTF-8 bytes) | e.g. `"txt"`, restores extension on decrypt |
 | Nonce | 12 bytes | GCM nonce, counter-derived (or random fallback if counter state was lost) |
 | ModTime, AccessTime | 12 bytes each (int64 unix seconds + uint32 nanoseconds), only if the timestamps flag is set | omitted when re-encrypting a v1 file whose original timestamps were never known (e.g. `mlp rotate`) — never fabricated |
@@ -69,7 +69,7 @@ Binary header + ciphertext. Two versions exist; `ReadHeader` accepts both, `Writ
 
 **Version `0x01` headers are not bound** (extension only, since v1 predates timestamps/compression) — those files were released as far back as v0.1, always encrypted with no AAD, and stay exactly as they were; that gap can't be closed after the fact. Tampering with a v1 file's extension still isn't caught by `verify` or `decrypt`.
 
-`ReadHeader` also rejects a version `0x02` header with any flag bit outside `flagTimestamps | flagCompressed`, rather than ignoring it: an older binary that doesn't recognize a bit would otherwise decrypt successfully but hand back the wrong plaintext (e.g. still-compressed bytes written out raw) with no error at all. This guards future flag bits from v0.8 onward. It can't help **mlp v0.6 binaries already released** — they predate this check (and predate AAD binding entirely) and have no such guard, so a v0.6 binary opening a v0.7-compressed file will still silently produce corrupt (still-compressed) output. Not fixable after the fact; documented as a known gap of the v0.6 release.
+`ReadHeader` also rejects a version `0x02` header with any flag bit outside `flagTimestamps | flagCompressed | flagBrotli`, rather than ignoring it: an older binary that doesn't recognize a bit would otherwise decrypt successfully but hand back the wrong plaintext (e.g. still-compressed bytes written out raw) with no error at all. This guards future flag bits (it's what makes brotli files fail loudly, not silently, on v0.7.x — verified against the real released v0.7.3 binary: it refuses them with the unknown-flag error and writes nothing). It can't help **mlp v0.6 binaries already released** — they predate this check (and predate AAD binding entirely) and have no such guard, so a v0.6 binary opening a v0.7-compressed file will still silently produce corrupt (still-compressed) output. Not fixable after the fact; documented as a known gap of the v0.6 release.
 
 - Decrypt reads header, restores original extension automatically — user doesn't retype it.
 
@@ -133,10 +133,14 @@ A separate desktop binary, built from `cmd/mlp-gui` with Fyne. It is a thin fron
 - `mlp-gui --version` prints `mlp-gui <version>` without opening a window.
 - Needs CGO and system GL/X11/Wayland libraries, so it is not part of the CLI build, the goreleaser archives, or `mlp`/`mlp-bin`. Linux only for now (AUR `mlp-gui`); no macOS/Windows builds.
 
-## Compression (v0.7)
-- Automatic, no flag: `encrypt` always zstd-compresses the plaintext first (`klauspost/compress/zstd`, pinned to v1.18.4 — the newest patch that still needs only Go 1.23; later patches raise their own `go` directive to 1.24+), then keeps the compressed form only if it's actually smaller than the raw bytes. Otherwise the raw bytes are stored — same idea as 7z's own store-vs-deflate choice per file. Already-compressed input (jpg, mp4, zip, another `.mlp`) commonly doesn't shrink and is stored raw.
-- Which happened is recorded in the header's `flagCompressed` bit (see File format); `decrypt` reads it and decompresses after the AEAD step, transparently. `mlp info` does not report whether a file was compressed or by how much (kept out of scope for this version) — it does still label its size field `stored size:` rather than `plaintext size:`, since for a compressed file that's what it actually is (see File format for why `info`, which never decrypts, can't show the true original size).
-- `mlp rotate` never decompresses/recompresses: it moves the exact decrypted bytes (compressed or not) to a new key and carries `Compressed` through in the new header unchanged.
+## Compression (v0.7, brotli added v0.8)
+- Automatic, no flag: `encrypt` compresses the plaintext before encrypting (compressing ciphertext would gain nothing) and keeps whichever is smallest of the raw bytes, a zstd pass, and a brotli pass. The winner is recorded in the header (`flagCompressed` = zstd, `flagBrotli` = brotli, neither = stored raw); `decrypt` reads it and decompresses after the AEAD step, transparently. `mlp info` doesn't report whether or how much a file was compressed; its size field is labelled `stored size:` because for a compressed file that is what it is (see File format).
+- **Already-compressed data is detected cheaply.** A zstd pass (default level, shared encoder, no frame checksum since GCM already authenticates the plaintext) always runs first. If it leaves more than 95% of the input, the file is treated as already compressed (jpg, mp4, zip, png, another `.mlp`), the brotli pass is skipped, and the zstd result is used only if smaller than raw. Without this, quality-11 brotli spent ~9 s/MB on such files.
+- **Brotli effort is tiered by input size** so the worst case stays around a few seconds per file (pure Go, one core, measured): <= 256 KiB quality 11 (~0.2-0.35 MB/s), <= 2 MiB quality 10 (~0.5-0.75 MB/s), <= 64 MiB quality 9 (~3-13 MB/s), larger quality 5 (~10-40 MB/s). Quality 5 already beats zstd's best setting on text, source and binaries, so there is no size at which falling back to zstd for ratio pays. Larger brotli windows gave no gain at these sizes and aren't used.
+- **Measured against v0.7.3** (real binaries, batch mode, per-file, headers included): Go source 19.6% smaller, JSON/HTML 25.3%, licenses/plain text 26.0%, a 5.5 MB log 24.3%, executables 14.6%, tiny files 11.2%, already-compressed data 0.2% smaller (and skipped in under a second). The price is time on many small text files: JSON/HTML 4 s -> ~45 s, source 1.4 s -> ~15 s, per 15 MB / 4.5 MB. Dropping quality 11 would give back ~2% of ratio for ~1.7x less time.
+- Libraries: `klauspost/compress` v1.18.4 (zstd; newest patch needing only Go 1.23) and `andybalholm/brotli` v1.2.4 (needs Go 1.22). Both pure Go, no CGO. The zstd encoder/decoder are created once and shared, not per file (batch runs used to pay that setup per file).
+- Compatibility: this release still reads every earlier file (format v1, and v2 with zstd). Files written by v0.8+ that chose brotli can't be read by v0.7.x, which refuses them loudly; v0.6.x predates compression entirely (see the known gap in File format).
+- `mlp rotate` never decompresses/recompresses: it moves the exact decrypted bytes (compressed or not) to a new key and carries the header's codec through unchanged.
 - No new command-line surface: this only touches what `encrypt`/`decrypt` do internally, including in batch mode.
 
 ## Scope (v0.1)
@@ -183,7 +187,7 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 /cmd/mlp-gui         - Fyne desktop app, builds the `mlp-gui` binary (CGO); assets/ holds the icon and .desktop file
 /internal/ops        - file-level encrypt/decrypt, batch walk, atomic writes; never prints or exits (shared by CLI and GUI)
                         atime_{linux,darwin,windows,other}.go - per-OS access-time extraction (os.FileInfo doesn't expose it portably)
-                        compress.go - zstd compress-if-smaller / decompress (v0.7)
+                        compress.go - picks raw / zstd / size-tiered brotli, and decompresses (v0.7, brotli v0.8)
 /internal/crypto     - AES-256-GCM encrypt/decrypt core
 /internal/keystore   - keyfile + counter create/load/locate/export/import
 /internal/fileformat - .mlp header read/write

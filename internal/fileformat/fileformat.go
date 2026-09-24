@@ -14,8 +14,9 @@
 // timestamps aren't known (e.g. mlp rotate on a version 1 source) omits
 // them rather than inventing a value. Version 1 files are always read as
 // having no timestamps. flagCompressed says the plaintext was zstd-compressed
-// before encryption. Both flags live in the same byte introduced for
-// timestamps, so adding compression didn't need another version bump.
+// before encryption, flagBrotli that it was brotli-compressed (at most one of
+// the two). All of these flags live in the same byte introduced for
+// timestamps, so adding compression codecs didn't need another version bump.
 //
 // ReadHeader rejects a version 2 header with any flag bit it doesn't
 // recognize (ErrUnknownFlags), rather than silently ignoring it: an older
@@ -49,8 +50,9 @@ const (
 	Version             byte = 0x02 // current: flags byte, optional timestamps
 
 	flagTimestamps byte = 1 << 0
-	flagCompressed byte = 1 << 1
-	knownFlags     byte = flagTimestamps | flagCompressed
+	flagCompressed byte = 1 << 1 // plaintext is zstd-compressed (v0.7)
+	flagBrotli     byte = 1 << 2 // plaintext is brotli-compressed (v0.8)
+	knownFlags     byte = flagTimestamps | flagCompressed | flagBrotli
 
 	NonceSize = 12
 	MaxExtLen = 255
@@ -64,7 +66,20 @@ var (
 	ErrBadMagic    = errors.New("not a valid .mlp file")
 	ErrBadVersion  = errors.New("unsupported .mlp format version")
 	ErrUnknownFlag = errors.New("fileformat: header sets a flag this build doesn't understand (file made by a newer mlp?)")
+	ErrBadFlags    = errors.New("fileformat: header sets conflicting compression flags")
 )
+
+// Codec says how a file's plaintext was compressed before encryption.
+type Codec byte
+
+const (
+	CodecNone   Codec = iota // stored as-is
+	CodecZstd                // zstd (mlp v0.7)
+	CodecBrotli              // brotli (mlp v0.8+)
+)
+
+// Compressed reports whether c is anything other than CodecNone.
+func (c Codec) Compressed() bool { return c != CodecNone }
 
 // Header is the fixed metadata stored at the start of every .mlp file.
 type Header struct {
@@ -77,9 +92,9 @@ type Header struct {
 	// version 2 file whose header was written without them (see above).
 	ModTime, AccessTime time.Time
 
-	// Compressed reports whether the plaintext was zstd-compressed before
-	// encryption; package ops decompresses after decrypting when set.
-	Compressed bool
+	// Codec is how the plaintext was compressed before encryption; package
+	// ops decompresses after decrypting when it isn't CodecNone.
+	Codec Codec
 }
 
 // HasTimestamps reports whether h carries a stored mtime/atime.
@@ -145,8 +160,14 @@ func writeHeaderTo(w io.Writer, h Header) error {
 	if h.HasTimestamps() {
 		flags |= flagTimestamps
 	}
-	if h.Compressed {
+	switch h.Codec {
+	case CodecNone:
+	case CodecZstd:
 		flags |= flagCompressed
+	case CodecBrotli:
+		flags |= flagBrotli
+	default:
+		return fmt.Errorf("fileformat: unknown codec %d", h.Codec)
 	}
 
 	if _, err := w.Write(magic[:]); err != nil {
@@ -222,7 +243,14 @@ func readHeaderFrom(r io.Reader) (Header, error) {
 		if flags&^knownFlags != 0 {
 			return h, ErrUnknownFlag
 		}
-		h.Compressed = flags&flagCompressed != 0
+		switch {
+		case flags&flagCompressed != 0 && flags&flagBrotli != 0:
+			return h, ErrBadFlags
+		case flags&flagCompressed != 0:
+			h.Codec = CodecZstd
+		case flags&flagBrotli != 0:
+			h.Codec = CodecBrotli
+		}
 	}
 
 	var extLen [1]byte

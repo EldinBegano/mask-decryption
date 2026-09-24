@@ -26,9 +26,11 @@ func newEncryptCmd() *cobra.Command {
 passphrase). notes.txt becomes notes.mlp; the original extension is stored
 in the header and restored on decrypt.
 
-Compression is tried automatically and kept only if it actually shrinks the
-file. The source file's permission bits, modification time and access time
-are also stored, and restored on decrypt.
+Compression (brotli, with stronger settings for smaller files) is tried
+automatically and kept only if it actually shrinks the file; data that is
+already compressed, like jpg or zip, is detected quickly and left alone.
+The source file's permission bits, modification time and access time are
+also stored, and restored on decrypt.
 
 Given a directory, every regular file under it (recursively, hidden files
 included) is encrypted the same way, each to its own .mlp beside it. A file

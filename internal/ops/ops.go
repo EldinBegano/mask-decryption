@@ -137,9 +137,10 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 
 	// Compression happens here, before encryption: AES-GCM ciphertext is
 	// high-entropy and doesn't compress at all, so it has to be the
-	// plaintext. Kept only if it actually helped (already-compressed
-	// input like jpg/mp4/zip usually doesn't shrink).
-	packed, compressed, err := maybeCompress(plaintext)
+	// plaintext. compress keeps the compressed form only if it actually
+	// helped (already-compressed input like jpg/mp4/zip usually doesn't
+	// shrink) and picks the codec/effort, see compress.go.
+	packed, codec, err := compress(plaintext)
 	if err != nil {
 		return res, wrap(KindOther, err)
 	}
@@ -155,7 +156,7 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		Nonce:      nonce,
 		ModTime:    info.ModTime(),
 		AccessTime: accessTime(info),
-		Compressed: compressed,
+		Codec:      codec,
 	}
 	// Header bytes are computed once, here, and used both as what binds the
 	// ciphertext to this exact header (GCM additional authenticated data —
@@ -232,8 +233,8 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 	if err != nil {
 		return res, wrap(KindAuth, fmt.Errorf("%s: %w", inputPath, err))
 	}
-	if hdr.Compressed {
-		plaintext, err = decompress(plaintext)
+	if hdr.Codec.Compressed() {
+		plaintext, err = decompress(plaintext, hdr.Codec)
 		if err != nil {
 			return res, wrap(KindOther, fmt.Errorf("%s: %w", inputPath, err))
 		}

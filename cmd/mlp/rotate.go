@@ -106,14 +106,14 @@ func runRotate(args []string, yes bool) error {
 		nonce := rot.NextNonce()
 
 		// Rotate only swaps the key: the decrypted payload (plaintext, or still
-		// zstd-compressed plaintext if hdr.Compressed) is re-encrypted exactly
-		// as-is, so the new header must carry the same Compressed flag through
+		// compressed plaintext if hdr.Codec is set) is re-encrypted exactly
+		// as-is, so the new header must carry the same compression codec through
 		// — dropping it would leave compressed bytes on disk with a header
 		// that says "not compressed", corrupting the next decrypt. The new
 		// header is encoded before encrypting, same as EncryptFile, so its
 		// bytes can be used as the new ciphertext's AAD (binding it to the
 		// same header this rotate is about to write) and then written as-is.
-		newHdr := fileformat.Header{Ext: hdr.Ext, Nonce: nonce, ModTime: hdr.ModTime, AccessTime: hdr.AccessTime, Compressed: hdr.Compressed}
+		newHdr := fileformat.Header{Ext: hdr.Ext, Nonce: nonce, ModTime: hdr.ModTime, AccessTime: hdr.AccessTime, Codec: hdr.Codec}
 		newHeaderBytes, err := fileformat.EncodeHeader(newHdr)
 		if err != nil {
 			return withCode(1, fmt.Errorf("%s: %w", t.path, err))

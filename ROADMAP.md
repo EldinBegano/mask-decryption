@@ -490,6 +490,70 @@ and cross-compiled for linux/darwin/windows; `goreleaser check` and a full
 snapshot release build both clean, with `man/*` confirmed present in the
 resulting archive.
 
+### Addendum: better compression (brotli), post-v0.8
+
+Asked to improve compression, aiming for ratio over speed. Measured before
+changing anything: a per-file benchmark (same keep-only-if-smaller rule as
+`mlp`) over ~70 MB of real data — Go source, a 5.5 MB log, JSON/HTML,
+licenses/plain text, executables, already-compressed images/archives and
+tiny files — comparing zstd at every level, xz/LZMA, gzip and brotli at
+several qualities, plus the real `xz`/`zstd`/`brotli` command-line tools as
+a ceiling. Findings that drove the design:
+
+- Pure-Go zstd tops out low: its "best" setting got a 5.5 MB log to 6.9%
+  where the real `zstd -19` reaches 5.5%, and it was ~16x slower than the
+  default setting for ~2-3 points on source. Pure-Go xz (`ulikunitz`) was
+  unremarkable at default settings (28.7% on source, 7.6% on the log, slower
+  than zstd) and, tuned with a 64 MB dictionary and binary-tree matching,
+  took minutes on the small-file sets and came out with *worse* ratios
+  (those runs shared the CPU with other jobs, so treat the times as rough).
+  The real `xz -9e` is best on the big log (4.7%) but isn't embeddable
+  without CGO.
+- Pure-Go brotli is a faithful port (its q11 matches the CLI's to within
+  0.2%) and wins everywhere: even its fast quality 5 beats zstd's best
+  setting on text, source, logs and binaries. Quality 10/11 gain more but
+  run at 0.2-0.75 MB/s, so effort has to depend on file size.
+
+Built (`internal/ops/compress.go`, `internal/fileformat`):
+- New codec via a new header flag (`flagBrotli`, bit 2); `Header.Compressed`
+  bool became `Header.Codec` (none/zstd/brotli). Both compression bits set
+  is `ErrBadFlags`. Old files unaffected: format v1 and v2+zstd still decrypt.
+- Choice per file: smallest of raw / a zstd pass / a size-tiered brotli pass
+  (q11 <= 256 KiB, q10 <= 2 MiB, q9 <= 64 MiB, q5 beyond). The zstd pass
+  doubles as an already-compressed detector: if it leaves > 95%, brotli is
+  skipped (quality 11 took ~9 s/MB on jpg/zip/png data; now ~0.1 s).
+- zstd frame checksum dropped (GCM already authenticates the plaintext) and
+  the zstd encoder/decoder shared process-wide instead of built per file.
+
+Result vs the real v0.7.3 binary, batch mode, headers included: Go source
+19.6% smaller, JSON/HTML 25.3%, licenses 26.0%, 5.5 MB log 24.3%,
+executables 14.6%, tiny files 11.2%, already-compressed 0.2% smaller.
+Cost: many small text files take ~10x longer (JSON/HTML 15.7 MB: 4 s -> 53
+s). A policy comparison (drop q11 / q9 only) showed q11 adds only ~2% ratio
+over q10 for ~1.7x the time; q9-only keeps ~55-60% of the gain at ~1/5 the
+time. Kept as built since ratio was the stated goal; one constant to change.
+
+Compatibility, tested against the *real released binaries*, not stand-ins:
+v0.5.0 (format v1) and v0.7.3 (zstd) files decrypt with the new build; the
+v0.7.3 binary refuses brotli files with the unknown-flag error and writes
+nothing (v0.7.0+ have that check; v0.6.0 doesn't, and predates compression
+altogether, a gap documented earlier). Tampering with either codec bit, or
+setting both, fails loudly. Caught and fixed on the way: my first probe used
+zstd's *fastest* level, which made already-compressed data 0.4% larger than
+v0.7.3; using the default level turned that into 0.2% smaller.
+
+Verified: a new 42-check script (roundtrips incl. empty and 1-byte files,
+codec selection, already-compressed speed bound, v0.7.3 comparison, both
+compatibility directions, header tampering, rotate/verify/info, timestamps
+and modes, mixed batch, keygen/import backups). Build + vet clean on the
+default toolchain, Go 1.23.0 and linux/darwin/windows; `go` directive still
+1.23 after adding `andybalholm/brotli` v1.2.4 (needs Go 1.22).
+
+Known limits: whole file is still compressed in memory; compression time
+is single-threaded; no cross-file (solid, 7z-style) compression, which
+would help most on many small similar files but conflicts with one
+independent `.mlp` per file.
+
 ## v0.9 — Automated test suite  (was "beyond v0.6")
 - Unit tests for `internal/crypto`, `internal/fileformat`, `internal/keystore`,
   `internal/ops`.
