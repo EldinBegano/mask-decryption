@@ -97,6 +97,16 @@ func reportDone(verb string, r ops.Result, showInSize bool) {
 	if r.TimestampFailed {
 		fmt.Fprintf(os.Stderr, "WARNING: %s: could not restore the original timestamp (file itself is fine)\n", r.Output)
 	}
+	if r.LegacyHeader {
+		warnLegacyHeader(r.Input)
+	}
+}
+
+// warnLegacyHeader notes a file made by mlp v0.6.0/v0.7.0, whose header
+// isn't bound to its ciphertext (see ops.OpenPayload). Its contents were
+// fully authenticated; only the header fields aren't protected.
+func warnLegacyHeader(path string) {
+	fmt.Fprintf(os.Stderr, "note: %s was made by mlp v0.6.0 or v0.7.0, whose headers aren't tamper-protected; re-encrypt it to add that\n", path)
 }
 
 func runEncrypt(inputPath, outputPath string, force bool) error {

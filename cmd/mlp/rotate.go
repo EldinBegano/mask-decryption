@@ -70,12 +70,11 @@ func runRotate(args []string, yes bool) error {
 			"Rotate %d file(s) to a new key? .mlp files not included stay on the old key (kept as keyfile.old) and can no longer be decrypted with the active one. Continue?",
 			len(targets)))
 		if !ok {
-			fmt.Println("aborted")
-			return nil
+			return withCode(1, errAborted)
 		}
 	}
 
-	rot, err := keystore.BeginRotation()
+	rot, err := keystore.BeginRotation(oldKey)
 	if err != nil {
 		return withCode(1, err)
 	}
@@ -98,7 +97,9 @@ func runRotate(args []string, yes bool) error {
 		if err != nil {
 			return withCode(1, err)
 		}
-		plaintext, err := crypto.Decrypt(oldKey, hdr.Nonce[:], ciphertext, hdr.AAD(headerBytes))
+		// A legacy file (mlp v0.6.0/v0.7.0, header not bound) needs no special
+		// handling: the header written below is bound, which upgrades it.
+		plaintext, _, err := ops.OpenPayload(oldKey, hdr, headerBytes, ciphertext)
 		if err != nil {
 			return withCode(3, fmt.Errorf("%s: %w (nothing was changed)", t.path, err))
 		}

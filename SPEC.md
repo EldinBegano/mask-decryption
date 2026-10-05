@@ -19,7 +19,9 @@ Decrypt: `file.mlp` → `file.txt`
 - Key: 256-bit, generated via `crypto/rand`
 - Nonce: 96-bit, **counter-based** (not random) — guarantees no reuse under a given key.
   - Counter stored in a separate state file next to the keyfile: `<config>/mask-decryption/counter`.
-  - Incremented and fsynced *before* each encrypt uses the value (crash-safe: never reuse on interrupted write).
+  - Incremented and made durable *before* each encrypt uses the value (crash-safe: never reuse on interrupted write). Written atomically (temp file, fsync, rename, directory fsync), so a crash mid-write leaves the previous value, never an empty or truncated counter (v0.8.1).
+  - **Concurrency (v0.8.1):** every read-modify-write of the keyfile or counter (`NextNonce`, `keygen`, first-key creation, `rotate`'s commit, `keyfile import`/`export`) holds an exclusive lock on `<config>/mask-decryption/lock` (`flock` on Linux/macOS, `LockFileEx` on Windows; released automatically if the process dies). Before v0.8.1 two encrypts running at once could read the same counter value and seal two files under the same nonce — reproduced with 40 parallel encrypts (3 nonces used twice). Two racing first-ever encrypts likewise can no longer each create a key.
+  - `NextNonce` takes the key the caller is encrypting with and refuses (`ErrKeyChanged`, "the keyfile was replaced while this was running") if it's no longer the active keyfile, e.g. a `keyfile import` in another window during a batch run: the counter then belongs to a different key, so taking a value from it could reuse one of the old key's nonces. `rotate`'s commit does the same check against the key it decrypted with. The GUI's Keyfile button is disabled while a run is in progress.
   - Nonce actually used = counter value, stored in file header alongside ciphertext.
   - If counter state file is missing/corrupted but keyfile is present: fall back to a random nonce for that operation and print a loud warning (does not block the operation).
 - Tampered/corrupted `.mlp` file → GCM auth tag check fails → decrypt aborts with clear error, no partial output
@@ -34,10 +36,15 @@ Decrypt: `file.mlp` → `file.txt`
 - **No recovery mechanism for the *active* key.** Lost/deleted keyfile (and its `keyfile.old`, if any) = permanently unrecoverable data. On first key creation, CLI prints a one-time loud warning telling user to back up the keyfile.
 - **Every operation that replaces the active key preserves the previous one as `keyfile.old`** — `mlp rotate` (the original case), `mlp keygen`, and `mlp keyfile import` all go through this same safety net, so one mistake (a `keygen` run by accident, or `keyfile import` pointed at the wrong path) is recoverable by hand rather than permanent. Single slot: each replacement overwrites whatever was there, it's "the previous key," not a history. Nothing is backed up when there was no existing key to replace (a genuinely first-ever `keygen`).
   - `mlp keygen`: backs up the key only (`keyfile.old`). The counter is **not** reset to 0 — like `mlp rotate`, it's a never-lowered high-water-mark across every key this config dir has ever had, so if `keyfile.old` is later restored by hand, resuming under it can't reuse a nonce it already used. A first-ever `keygen` (nothing to preserve) still starts the counter at 0.
-  - `mlp keyfile import`: backs up the key **and its matched counter** together, as `keyfile.old` + `counter.old` — restoring that pair (not just the key alone) is what keeps resuming the old key nonce-safe, since `import` fully replaces the counter too (unlike `keygen`).
+  - `mlp keyfile import`: backs up the key **and its matched counter** together, as `keyfile.old` + `counter.old`, so the pair can be restored together. (Before v0.8.1 `import` fully replaced the counter, which made restoring the pair, not the key alone, the only nonce-safe way back; since v0.8.1 it never lowers the counter either, see below.)
   - Both print where the backup landed (`previous key kept at <path> — delete it once you no longer need it`), same as `mlp rotate` already does.
-- `mlp keyfile export <path>` — copies keyfile **and counter state** out (e.g. to USB) for backup, bundled together so a restore continues the counter correctly (avoids nonce reuse). Prints SHA-256 of the exported keyfile to terminal for manual verification.
-- `mlp keyfile import <path>` — installs keyfile + counter from backup into the config dir (confirms before overwriting an existing one; see the `keyfile.old`/`counter.old` backup above).
+- `mlp keyfile export <path>` — copies keyfile **and counter state** out (e.g. to USB) for backup, bundled together so a restore continues the counter correctly (avoids nonce reuse). Prints the SHA-256 of the keyfile *as read back from `<path>`* after writing (it printed the source's hash before v0.8.1), for manual verification later. v0.8.1:
+  - If `<path>` already holds a backup of a **different** key, asks before replacing it (`-y` skips the prompt; GUI: confirm dialog) — it may be that key's only backup. A backup of the same key is refreshed without asking.
+  - If the active counter is missing or corrupt, the backup gets a counter at a random point in `[2^63, 2^63+2^62)` and a warning, instead of `0` (a restore from `0` would reuse every nonce the key had already used). The real counter only ever counted up from 0, one per file, so it can't have reached that range.
+- `mlp keyfile import <path>` — installs keyfile + counter from backup into the config dir (confirms before overwriting an existing one; see the `keyfile.old`/`counter.old` backup above). v0.8.1:
+  - The backup is validated before anything changes: the keyfile must be exactly 32 bytes, the counter readable and 8 bytes, and `<path>` must not be the config dir itself. Before v0.8.1 a wrong-size "keyfile" was installed with exit 0, and a backup missing its counter replaced the key and *then* failed, leaving the imported key active with the old key's counter.
+  - The counter becomes `max(backup's, current)` — never lowered, the same high-water-mark rule as `keygen`/`rotate` — so a crash between the counter and key writes can't leave either key below its real usage. `counter.old` is still written alongside `keyfile.old`.
+  - Re-importing the active key's own backup doesn't touch `keyfile.old`/`counter.old` (it would otherwise push a different previous key out of the single slot).
 - Config dir override: `MLP_CONFIG_DIR` env var, if set, overrides `os.UserConfigDir()` default (portable/USB use, testing).
 
 ## File format (`.mlp`)
@@ -67,6 +74,8 @@ Binary header + ciphertext. Two versions exist; `ReadHeader` accepts both, `Writ
 
 **Version `0x02` headers are cryptographically bound to their ciphertext**, using AES-GCM's additional authenticated data (AAD): the header's own encoded bytes are passed as AAD when encrypting, and the same bytes (as actually read from the file) are required to match on decrypt. Editing *anything* in a v2 header without the key — extension, nonce, timestamps, the compressed flag — makes decryption fail loudly (`ErrAuthFailed`) instead of silently succeeding under the tampered header. `internal/crypto.Encrypt`/`Decrypt` take this as an explicit `aad []byte` parameter; `fileformat.Header.AAD(headerBytes)` decides what to pass (nil for a version `0x01` header, `headerBytes` for version `0x02`).
 
+**Exception — legacy version `0x02` files (v0.8.1):** mlp **v0.6.0 and v0.7.0 were released** writing version `0x02` headers before AAD binding existed (it arrived in v0.7.1), so their files were sealed with no AAD. From v0.7.1 to v0.8.0 those files failed to decrypt, reported as tampering (exit 3; `verify` exit 6). Since v0.8.1, a version `0x02` file that fails authentication is retried once with nil AAD (`ops.OpenPayload`). This can't weaken newer files — a ciphertext sealed with its header as AAD never authenticates without it — and is skipped for brotli files, which no pre-binding release wrote. A file that passes this way decrypts normally with a note (`made by mlp v0.6.0 or v0.7.0, whose headers aren't tamper-protected; re-encrypt it to add that`); `verify` passes with the same note; `rotate` re-seals it with a bound header. Like a version `0x01` file, a legacy file's header isn't protected. (An earlier version of this section and ROADMAP.md claimed format `0x02` was never released before binding; the release tags show otherwise.)
+
 **Version `0x01` headers are not bound** (extension only, since v1 predates timestamps/compression) — those files were released as far back as v0.1, always encrypted with no AAD, and stay exactly as they were; that gap can't be closed after the fact. Tampering with a v1 file's extension still isn't caught by `verify` or `decrypt`.
 
 `ReadHeader` also rejects a version `0x02` header with any flag bit outside `flagTimestamps | flagCompressed | flagBrotli`, rather than ignoring it: an older binary that doesn't recognize a bit would otherwise decrypt successfully but hand back the wrong plaintext (e.g. still-compressed bytes written out raw) with no error at all. This guards future flag bits (it's what makes brotli files fail loudly, not silently, on v0.7.x — verified against the real released v0.7.3 binary: it refuses them with the unknown-flag error and writes nothing). It can't help **mlp v0.6 binaries already released** — they predate this check (and predate AAD binding entirely) and have no such guard, so a v0.6 binary opening a v0.7-compressed file will still silently produce corrupt (still-compressed) output. Not fixable after the fact; documented as a known gap of the v0.6 release.
@@ -88,6 +97,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 - `mlp gendoc <dir>` also exists, generating those man pages; it's hidden from `--help` since it's a build-time tool, not something to run day to day.
 - `-o/--output` lets user redirect output location/filename; default is fixed naming next to input.
 - Both original and output file are kept (no auto-delete).
+- Writes are crash-safe (v0.8.1): every output is written to a temp file beside the target (`.mlp-*.tmp`), fsynced, then published — renamed over the target with `--force`, otherwise hard-linked into place, which fails if the target exists, so nothing is clobbered even by a file created concurrently. The directory is fsynced afterwards (best effort). An error or crash leaves the target absent or complete, never partial (before v0.8.1, without `--force` the output was written in place without fsync). Filesystems without hard links (FAT/exFAT, some network shares) fall back to check-then-rename, with a small race window. The temp name is short and fixed rather than derived from the target, so names near the 255-byte limit still work.
 - If output filename already exists: abort, don't overwrite, print error (no silent clobber). `-f/--force` replaces it instead (v0.5, below). Checked as early as possible — right after the output path is known (which for decrypt only needs the header's stored extension, not the key) and before any key fetch or decryption — so this cheap, local check reports first if it's the real blocker rather than being masked by a `getKey()` failure that would otherwise be hit first.
 - Default output: one-line confirmation printed on success (e.g. `encrypted -> file.mlp`). `-v/--verbose` adds step/timing detail. No progress bar (whole-file crypto is fast enough not to need one).
 - Output file preserves original file's permission mode bits.
@@ -96,7 +106,7 @@ mlp keyfile import <path>          # restore keyfile from given path
 
 ### `--force` / `-f` (v0.5)
 - On `encrypt` and `decrypt`, single file or directory: replace an existing output file instead of failing with exit 4. The result line says `(overwrote existing)`.
-- Atomic: the new file is fully written to a temp file beside the target (`.<name>.*.tmp`), fsynced, and renamed over it. Any failure leaves the existing file untouched and no temp file behind. The replaced file takes the source file's permission bits.
+- Atomic: the new file is fully written to a temp file beside the target (`.mlp-*.tmp`), fsynced, and renamed over it. Any failure leaves the existing file untouched and no temp file behind. The replaced file takes the source file's permission bits.
 - Guards that `--force` does **not** override: output being the same file as the input (including via a hard link) and output being a directory both exit 1.
 - In batch mode it applies per file. The same-run collision fallback still applies (`notes.txt` still becomes `notes.txt.mlp`, never clobbering `notes.mlp` from the same run).
 - Not offered on `rotate` (which replaces files by design, all-or-nothing) or `keygen`/`keyfile import` (which prompt or take `-y`).
@@ -169,6 +179,8 @@ Distinct codes per failure type, for scripting:
 
 Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared code if they all match, otherwise 1.
 
+A declined confirmation prompt (`keygen`, `rotate`, `keyfile import`, `keyfile export` over a different key's backup) exits 1 with `error: aborted, nothing was changed` — including when stdin has no answer to give (`</dev/null`, a script). Before v0.8.1 it printed `aborted` and exited 0, which a script would read as success. Piping an answer (`echo y | mlp keygen`) still works.
+
 ## CI
 - GitHub Actions: `go build` + `go vet` on every push/PR.
 - goreleaser: cross-compiled binaries on tag push (separate workflow).
@@ -191,6 +203,7 @@ Batch runs (`encrypt`/`decrypt` on a directory) exit with the failures' shared c
 /internal/crypto     - AES-256-GCM encrypt/decrypt core
 /internal/keystore   - keyfile + counter create/load/locate/export/import
 /internal/fileformat - .mlp header read/write
+/internal/fsutil     - atomic file replace, directory fsync, cross-process lock (lock_{unix,windows,other}.go) (v0.8.1)
 ```
 
 ## Backlog (post-v0.1, not open questions — deliberately deferred)

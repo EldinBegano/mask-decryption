@@ -11,6 +11,7 @@ import (
 
 	"github.com/EldinBegano/mask-decryption/internal/crypto"
 	"github.com/EldinBegano/mask-decryption/internal/fileformat"
+	"github.com/EldinBegano/mask-decryption/internal/fsutil"
 	"github.com/EldinBegano/mask-decryption/internal/keystore"
 )
 
@@ -38,6 +39,12 @@ type Result struct {
 	// successfully but its original mtime/atime (stored in the .mlp
 	// header) could not be applied. The file itself is not affected.
 	TimestampFailed bool
+
+	// LegacyHeader is set on decrypt when the file was written by mlp
+	// v0.6.0 or v0.7.0, before headers were bound to their ciphertext (see
+	// OpenPayload). It decrypted correctly; re-encrypting it adds the
+	// header protection it lacks.
+	LegacyHeader bool
 }
 
 // FileExt returns the extension without its dot. A name that is only a
@@ -100,6 +107,28 @@ func ReadMLP(path string) (hdr fileformat.Header, headerBytes, ciphertext []byte
 	return hdr, headerBytes, ciphertext, nil
 }
 
+// OpenPayload authenticates and decrypts a .mlp file's ciphertext, returning
+// its payload: the plaintext, still compressed if hdr.Codec says so.
+//
+// mlp v0.6.0 and v0.7.0 were released writing version 2 headers before
+// header binding (fileformat.Header.AAD) existed, sealing them with no AAD.
+// Those files fail the normal check, so a version 2 file that fails is
+// retried once with no AAD, and legacy reports when that succeeds. The retry
+// can't weaken newer files: a ciphertext sealed with its header as AAD never
+// authenticates without it. It's skipped for brotli, which no release before
+// header binding ever wrote. A legacy file's header is unprotected, the same
+// as a version 1 file's.
+func OpenPayload(key []byte, hdr fileformat.Header, headerBytes, ciphertext []byte) (payload []byte, legacy bool, err error) {
+	payload, err = crypto.Decrypt(key, hdr.Nonce[:], ciphertext, hdr.AAD(headerBytes))
+	if err == nil || hdr.Version == fileformat.VersionNoTimestamps || hdr.Codec == fileformat.CodecBrotli {
+		return payload, false, err
+	}
+	if p, lerr := crypto.Decrypt(key, hdr.Nonce[:], ciphertext, nil); lerr == nil {
+		return p, true, nil
+	}
+	return nil, false, err
+}
+
 // EncryptFile encrypts inputPath to outputPath ("" means DefaultEncryptPath).
 func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Result, error) {
 	res := Result{Input: inputPath}
@@ -145,7 +174,7 @@ func EncryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		return res, wrap(KindOther, err)
 	}
 
-	nonce, fellBack, err := keystore.NextNonce()
+	nonce, fellBack, err := keystore.NextNonce(key)
 	if err != nil {
 		return res, wrap(KindOther, err)
 	}
@@ -229,10 +258,11 @@ func DecryptFile(getKey KeyFunc, inputPath, outputPath string, opts Options) (Re
 		return res, wrap(KindNoKey, err)
 	}
 
-	plaintext, err := crypto.Decrypt(key, hdr.Nonce[:], ciphertext, hdr.AAD(headerBytes))
+	plaintext, legacy, err := OpenPayload(key, hdr, headerBytes, ciphertext)
 	if err != nil {
 		return res, wrap(KindAuth, fmt.Errorf("%s: %w", inputPath, err))
 	}
+	res.LegacyHeader = legacy
 	if hdr.Codec.Compressed() {
 		plaintext, err = decompress(plaintext, hdr.Codec)
 		if err != nil {
@@ -278,52 +308,71 @@ func checkOutput(input os.FileInfo, outputPath string, force bool) (overwrite bo
 	return true, nil
 }
 
-// writeFile writes path via fill. Without overwrite it creates the file
-// exclusively (an existing file is KindExists). With overwrite it writes a
-// temp file beside path and renames it over path, so an existing file
-// survives any failure. A partial file is never left behind.
+// writeFile writes path via fill, crash-safely. The data goes to a temp file
+// beside path and is fsynced; only then does it appear under path — renamed
+// over it with overwrite, or linked into place without (see publishNew),
+// which never replaces an existing file. An error or crash at any point
+// leaves path either absent or complete, never partial, and the temp file
+// is removed on error.
 func writeFile(path string, perm os.FileMode, overwrite bool, fill func(io.Writer) error) error {
-	var f *os.File
-	var err error
-	if overwrite {
-		f, err = os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
-	} else {
-		f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	}
+	dir := filepath.Dir(path)
+	// A short fixed prefix, not path's own name: that could be close enough
+	// to the filesystem's name length limit that a longer temp name fails.
+	f, err := os.CreateTemp(dir, ".mlp-*.tmp")
 	if err != nil {
-		if os.IsExist(err) {
-			return wrap(KindExists, fmt.Errorf("output file %s already exists", path))
-		}
 		return wrap(KindOther, err)
 	}
 	tmp := f.Name()
+	// Gone already after a rename; after a link, this drops the temp name.
+	defer os.Remove(tmp)
 
-	fail := func(err error) error {
-		f.Close()
-		os.Remove(tmp)
+	err = fill(f)
+	if err == nil {
+		err = f.Chmod(perm)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return wrap(KindOther, err)
 	}
 
-	if err := fill(f); err != nil {
-		return fail(err)
-	}
-	if err := f.Chmod(perm); err != nil {
-		return fail(err)
-	}
-	if overwrite {
-		if err := f.Sync(); err != nil {
-			return fail(err)
-		}
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return wrap(KindOther, err)
-	}
 	if overwrite {
 		if err := os.Rename(tmp, path); err != nil {
-			os.Remove(tmp)
 			return wrap(KindOther, err)
 		}
+	} else if err := publishNew(tmp, path); err != nil {
+		return err
+	}
+	// Best effort: the file's contents are already synced; this makes its
+	// new name durable too, where the filesystem supports it.
+	fsutil.SyncDir(dir)
+	return nil
+}
+
+// publishNew gives the finished temp file its final name without ever
+// replacing an existing file. A hard link does that atomically. Filesystems
+// without hard links (FAT/exFAT USB sticks, some network shares) fall back to
+// checking first and renaming, which leaves a small race window but is the
+// best they allow.
+func publishNew(tmp, path string) error {
+	err := os.Link(tmp, path)
+	if err == nil {
+		return nil
+	}
+	if os.IsExist(err) {
+		return wrap(KindExists, fmt.Errorf("output file %s already exists", path))
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return wrap(KindExists, fmt.Errorf("output file %s already exists", path))
+	} else if !os.IsNotExist(err) {
+		return wrap(KindOther, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return wrap(KindOther, err)
 	}
 	return nil
 }

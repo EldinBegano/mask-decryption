@@ -7,6 +7,7 @@ require (
 	github.com/andybalholm/brotli v1.2.4
 	github.com/klauspost/compress v1.18.4
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/sys v0.30.0
 )
 
 require (
@@ -46,7 +47,6 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/image v0.24.0 // indirect
 	golang.org/x/net v0.35.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

@@ -328,7 +328,9 @@ the header is authenticated") and has been corrected.
 
 Zero backward-compatibility cost: format version `0x02` (the one with a
 flags byte at all) was never tagged or released — only v0.1 through v0.5
-were, and those are all version `0x01`, unaffected. Verified with a
+were, and those are all version `0x01`, unaffected. **Wrong, see v0.8.1:**
+v0.6.0 and v0.7.0 had both been tagged and published by then, and their
+version `0x02` files stopped decrypting from v0.7.1 on. Verified with a
 genuinely reconstructed version-1 file (real AAD=nil ciphertext built by
 calling `crypto.Encrypt` directly, exactly as a real pre-v0.6 binary would
 have, not by truncating a v2 file) — it still decrypts correctly. Also
@@ -553,6 +555,80 @@ Known limits: whole file is still compressed in memory; compression time
 is single-threaded; no cross-file (solid, 7z-style) compression, which
 would help most on many small similar files but conflicts with one
 independent `.mlp` per file.
+
+## v0.8.1 — Compatibility and key-safety fixes  (built; behavior specified in SPEC.md)
+Found by a full read of SPEC.md against the code and the release tags, then
+reproduced against real binaries built from the tags before fixing.
+
+**Fixed — files from the released v0.6.0 and v0.7.0 couldn't be decrypted.**
+The v0.7 addendum above assumed format `0x02` was never released before AAD
+binding, but `git tag` and `gh release list` show v0.6.0 and v0.7.0 were.
+Reproduced: a file encrypted by the real v0.6.0 or v0.7.0 binary failed
+`mlp decrypt` with exit 3 and `mlp verify` with exit 6 ("corrupted, tampered
+with, or wrong key") on v0.7.1 through v0.8.0, while the old binary still
+decrypted it. `ops.OpenPayload` now retries a failing version `0x02` file once
+with nil AAD and flags it as legacy; `decrypt`, `verify` and `rotate` all go
+through it. This can't weaken newer files (a tag computed with AAD never
+verifies without it); brotli files, which no pre-binding release wrote, are
+never retried. Legacy files get a note to re-encrypt; `rotate` upgrades them.
+
+**Fixed — concurrent encrypts reused nonces.** `NextNonce` read, incremented
+and wrote the counter with no lock. Reproduced: 40 parallel `mlp encrypt`
+runs under one key used 3 nonces twice (counter ended at 37, not 40). Fixed
+with a cross-process lock (`internal/fsutil`: `flock` / `LockFileEx`) on
+`<config>/lock` around every keyfile/counter read-modify-write. Related
+fixes in the same spirit: the counter is written atomically (a crash
+mid-write used to leave it empty, which forced random nonces forever);
+`NextNonce` takes the caller's key and refuses if the active keyfile changed
+meanwhile (an import during a batch would otherwise hand that batch's old
+key values from the new key's counter); `Rotation.Commit` checks the same;
+two racing first-ever encrypts no longer each create a key; the GUI's
+Keyfile button is disabled while a run is in progress.
+
+**Fixed — `keyfile import` accepted anything.** A 6-byte "keyfile" imported
+with exit 0; a backup missing its counter replaced the key and then failed,
+leaving the new key active with the old key's counter. The backup is now
+validated before anything changes, the config dir itself is refused as a
+source, the counter is set to `max(backup, current)` (never lowered), and
+re-importing the active key's own backup leaves `keyfile.old` alone.
+
+**Fixed — `keyfile export` wrote counter 0 when the counter was lost**, so a
+restore would reuse every nonce the key had used. It now starts the backup's
+counter at a random point in `[2^63, 2^63+2^62)` and warns. It also printed
+the source keyfile's hash rather than the copy's (now read back from the
+destination), and silently overwrote a backup of a different key at the
+destination (now asks; `-y` to skip).
+
+**Fixed — declined prompts exited 0.** `mlp keygen </dev/null` printed
+"aborted" and exited 0. All prompts now exit 1 with "aborted, nothing was
+changed".
+
+**Fixed — outputs weren't crash-safe without `--force`.** They were written
+in place with no fsync, so a crash could leave a partial plaintext under its
+real name, or an empty `.mlp` after the user deleted the original. Every
+output is now written to a temp file, fsynced, and published by hard link
+(no clobber) or rename (`--force`), then the directory is fsynced. No-link
+filesystems fall back to check-then-rename.
+
+Verified: a 67-check script against real binaries built from the v0.5.0,
+v0.6.0, v0.7.0, v0.7.3 and v0.8.0 tags — legacy files decrypt
+byte-identically with mtime restored, verify, and rotate into bound files;
+v1, v0.7.3 and v0.8.0 files unaffected; tampered new files still exit 3;
+60 parallel encrypts give 0 duplicate nonces and counter exactly 60; 20
+racing first-ever encrypts make one key; an import mid-batch is refused for
+the remaining files; every import/export/prompt case above; fsync failure
+and no-hard-link filesystems simulated with `strace` fault injection (fsync
+EIO leaves no output and no temp file; EPERM on `link` uses the fallback and
+still refuses existing outputs); 250-byte filenames; batch, rotate, info,
+verify regressions. Build + vet on the default toolchain and Go 1.23.0, and
+for linux/darwin/windows on amd64/arm64; the GUI builds.
+
+**Not verified:** clicking through the GUI changes by hand (export
+replace prompt, disabled Keyfile button), the Windows lock on real
+Windows, and a real FAT/exFAT mount (simulated only).
+
+Not fixed here (from the same review): `keygen` still resets a corrupt
+counter to 0 without the warning `rotate` gives.
 
 ## v0.9 — Automated test suite  (was "beyond v0.6")
 - Unit tests for `internal/crypto`, `internal/fileformat`, `internal/keystore`,

@@ -81,6 +81,12 @@ mlp decrypt ~/Documents            # every .mlp file under it, recursively
 Fails loudly (exit 3) on a tampered or corrupted file — never writes a
 partial or wrong-looking file.
 
+Files made by mlp v0.6.0 or v0.7.0 decrypt normally, with a note: those
+two releases didn't yet tie the header to the encrypted data, so their
+headers aren't tamper-protected. Re-encrypting such a file (or `mlp
+rotate`) adds that. (v0.7.1 to v0.8.0 wrongly refused these files as
+tampered; upgrade to v0.8.1 or later to read them.)
+
 ### `mlp verify <file.mlp>`
 
 Checks a file's authentication tag without writing any output. Needs the
@@ -140,12 +146,16 @@ mlp keygen -y      # skip the confirmation prompt
 
 ```
 mlp keyfile export /media/usb/backup
+mlp keyfile export /media/usb/backup -y   # replace a different key's backup without asking
 ```
 
 Copies the keyfile and its counter into `<path>` (created if needed),
 bundled together so a later import continues the counter correctly. Prints
-the exported keyfile's SHA-256 so you can verify a copy matches. This is
-the backup step the warning at the top of this README is telling you to run.
+the SHA-256 of the copy as read back from `<path>`, so you can check it
+again later. If `<path>` already holds a backup of a *different* key, it
+asks before replacing it, since that may be the other key's only backup.
+This is the backup step the warning at the top of this README is telling
+you to run.
 
 ### `mlp keyfile import <path>`
 
@@ -154,10 +164,12 @@ mlp keyfile import /media/usb/backup
 mlp keyfile import /media/usb/backup -y   # skip the confirmation prompt
 ```
 
-Installs a keyfile+counter backup from `<path>`, making it active. Keeps
-whatever key was previously active as `keyfile.old` (with its matching
-counter as `counter.old`) first, so importing the wrong backup by mistake
-is recoverable, not permanent.
+Installs a keyfile+counter backup from `<path>`, making it active. The
+backup is checked first: a folder without a valid keyfile and counter is
+refused before anything changes. Keeps whatever different key was
+previously active as `keyfile.old` (with its matching counter as
+`counter.old`) first, so importing the wrong backup by mistake is
+recoverable, not permanent.
 
 ## Exit codes
 
@@ -174,7 +186,12 @@ Scripts can rely on these:
 | 6 | `verify` failed |
 
 A batch run (`encrypt`/`decrypt` on a directory) exits with the shared
-code of its failures if they all agree, otherwise 1.
+code of its failures if they all agree, otherwise 1. A declined
+confirmation prompt — including one with no input to read, as in a
+script — exits 1 and changes nothing; pass `-y` to skip the prompt.
+
+Running several `mlp` commands at once (parallel scripts, the CLI next to
+`mlp-gui`) is safe: they take turns on the keyfile and counter.
 
 ## `mlp-gui`
 

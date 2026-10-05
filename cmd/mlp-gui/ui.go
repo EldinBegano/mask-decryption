@@ -42,6 +42,7 @@ type ui struct {
 
 	pathLabel *widget.Label
 	hintLabel *widget.Label
+	keyBtn    *widget.Button
 	encBtn    *widget.Button
 	decBtn    *widget.Button
 	busy      *widget.ProgressBarInfinite
@@ -60,8 +61,8 @@ func newUI(win fyne.Window) *ui {
 
 	title := widget.NewLabelWithStyle("mlp", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
 	subtitle := widget.NewLabel("Encrypt and decrypt files with AES-256-GCM")
-	keyBtn := widget.NewButtonWithIcon("Keyfile", theme.SettingsIcon(), u.showKeyDialog)
-	header := container.NewBorder(nil, nil, container.NewVBox(title, subtitle), keyBtn)
+	u.keyBtn = widget.NewButtonWithIcon("Keyfile", theme.SettingsIcon(), u.showKeyDialog)
+	header := container.NewBorder(nil, nil, container.NewVBox(title, subtitle), u.keyBtn)
 
 	dropText := widget.NewLabelWithStyle("Drop a file or folder here", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 	u.pathLabel = widget.NewLabelWithStyle("Nothing selected", fyne.TextAlignCenter, fyne.TextStyle{})
@@ -189,6 +190,10 @@ func (u *ui) refreshButtons() {
 	}
 	setEnabled(u.encBtn, canEnc)
 	setEnabled(u.decBtn, canDec)
+	// Importing or exporting a key mid-run would swap the key out from under
+	// files still being processed (keystore refuses that, but failing the
+	// rest of the run is no better).
+	setEnabled(u.keyBtn, !u.running)
 }
 
 func setEnabled(b *widget.Button, on bool) {
@@ -233,6 +238,9 @@ func (u *ui) addEvent(encrypt bool, e ops.Event) {
 		}
 		if e.Result.TimestampFailed {
 			u.addLine(logWarn, "Could not restore the original timestamp (file itself is fine).")
+		}
+		if e.Result.LegacyHeader {
+			u.addLine(logWarn, "Made by mlp v0.6.0 or v0.7.0, whose headers aren't tamper-protected; re-encrypt it to add that.")
 		}
 	case ops.EventFailed:
 		u.addLine(logErr, e.Err.Error())
@@ -453,18 +461,37 @@ func (u *ui) exportKey() {
 		if l == nil {
 			return
 		}
-		if err := keystore.Export(l.Path()); err != nil {
-			if errors.Is(err, keystore.ErrKeyfileMissing) {
-				dialog.ShowInformation("No keyfile yet", "There is nothing to back up until you encrypt something.", u.win)
-				return
-			}
-			dialog.ShowError(err, u.win)
-			return
-		}
-		sum, _ := keystore.KeyfileSHA256()
-		dialog.ShowInformation("Backup saved",
-			"Keyfile and counter copied to:\n"+l.Path()+"\n\nSHA-256 of the keyfile:\n"+sum, u.win)
+		u.doExport(l.Path(), false)
 	}, u.win).Show()
+}
+
+// doExport writes the backup, asking first if dest holds one of a different key.
+func (u *ui) doExport(dest string, replace bool) {
+	sum, counterReset, err := keystore.Export(dest, replace)
+	switch {
+	case errors.Is(err, keystore.ErrBackupExists):
+		dialog.NewConfirm("Replace existing backup?",
+			"This folder already holds a backup of a different key. Replacing it loses that backup. "+
+				"Copy it somewhere else first if you might still need it.",
+			func(yes bool) {
+				if yes {
+					u.doExport(dest, true)
+				}
+			}, u.win).Show()
+		return
+	case errors.Is(err, keystore.ErrKeyfileMissing):
+		dialog.ShowInformation("No keyfile yet", "There is nothing to back up until you encrypt something.", u.win)
+		return
+	case err != nil:
+		dialog.ShowError(err, u.win)
+		return
+	}
+	msg := "Keyfile and counter copied to:\n" + dest + "\n\nSHA-256 of the copy:\n" + sum
+	if counterReset {
+		msg += "\n\nThe nonce counter was missing or corrupt, so the backup's counter starts at a " +
+			"random, very high value instead, which can't repeat a nonce the key already used."
+	}
+	dialog.ShowInformation("Backup saved", msg, u.win)
 }
 
 func (u *ui) importKey() {
@@ -478,12 +505,13 @@ func (u *ui) importKey() {
 		}
 		hadOldKey, _ := keystore.Exists()
 		doImport := func() {
-			if err := keystore.Import(l.Path()); err != nil {
+			replaced, err := keystore.Import(l.Path())
+			if err != nil {
 				dialog.ShowError(err, u.win)
 				return
 			}
 			msg := "The backup was restored."
-			if hadOldKey {
+			if replaced {
 				if oldPath, err := keystore.OldKeyPath(); err == nil {
 					msg += "\n\nThe key that was active before is kept at:\n" + oldPath +
 						"\n\nDelete it once you no longer need it."
@@ -493,7 +521,7 @@ func (u *ui) importKey() {
 		}
 		if hadOldKey {
 			dialog.NewConfirm("Replace current keyfile?",
-				"A keyfile already exists. Importing replaces it and its nonce counter — files encrypted "+
+				"A keyfile already exists. Importing replaces it — files encrypted "+
 					"with the current key can no longer be decrypted unless you restore it (it's kept as "+
 					"keyfile.old, with counter.old, if you picked the wrong backup by mistake).",
 				func(yes bool) {

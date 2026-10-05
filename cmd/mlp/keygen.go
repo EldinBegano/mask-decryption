@@ -46,8 +46,7 @@ func runKeygen(yes bool) error {
 	if exists && !yes {
 		ok := confirm("A keyfile already exists. Regenerating it means .mlp files encrypted with the old key can no longer be decrypted unless you restore it (the old key is kept as keyfile.old). Continue?")
 		if !ok {
-			fmt.Println("aborted")
-			return nil
+			return withCode(1, errAborted)
 		}
 	}
 

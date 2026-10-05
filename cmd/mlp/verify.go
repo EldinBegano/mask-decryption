@@ -8,7 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/EldinBegano/mask-decryption/internal/crypto"
 	"github.com/EldinBegano/mask-decryption/internal/keystore"
 	"github.com/EldinBegano/mask-decryption/internal/ops"
 )
@@ -48,10 +47,14 @@ func runVerify(inputPath string) error {
 		return withCode(2, err)
 	}
 
-	if _, err := crypto.Decrypt(key, hdr.Nonce[:], ciphertext, hdr.AAD(headerBytes)); err != nil {
+	_, legacy, err := ops.OpenPayload(key, hdr, headerBytes, ciphertext)
+	if err != nil {
 		return withCode(6, fmt.Errorf("%s: %w", inputPath, err))
 	}
 
 	fmt.Printf("OK: %s is intact\n", inputPath)
+	if legacy {
+		warnLegacyHeader(inputPath)
+	}
 	return nil
 }
