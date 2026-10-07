@@ -9,6 +9,9 @@ mlp encrypt notes.txt      notes.txt -> notes.mlp
 mlp decrypt notes.mlp      notes.mlp -> notes.txt
 ```
 
+**Documentation:** <https://eldinbegano.github.io/mask-decryption/> (source
+in [`docs/`](docs/)). This README is the short version.
+
 ## Contents
 
 - [Install](#install)

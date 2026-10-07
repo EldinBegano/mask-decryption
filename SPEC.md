@@ -192,6 +192,7 @@ A declined confirmation prompt (`keygen`, `rotate`, `keyfile import`, `keyfile e
 - goreleaser, cross-compiled binaries attached to GitHub releases on tag push. Every release archive includes `LICENSE`, shell completions (`completions/`), and man pages (`man/`, one per command, v0.8+).
 - AUR: `mlp` (source build), `mlp-bin` (prebuilt release binary) and `mlp-gui` (source build of the GUI, v0.5), pushed automatically on each stable tag by `.github/workflows/release.yml` using `packaging/aur/`. Both `mlp` and `mlp-bin` install the man pages to `/usr/share/man/man1/`. See ROADMAP.md.
 - `README.md` (v0.8): install, quick start, command reference, exit codes — the user-facing counterpart to this file.
+- Docs site (`docs/`): Hugo with the Hextra theme (a Hugo module, so building needs Go), the long-form user docs — install, backups, per-command reference, how it works, file format, compatibility, troubleshooting. Built on every PR touching it and published to GitHub Pages from `main` by `.github/workflows/docs.yml` (Hugo version pinned there). The site's logo and favicon (`docs/static/`) are the shared mlp mask icon (`mlp.png`, `mlp.ico`), not the GUI's lock icon.
 
 ## Architecture
 ```
